@@ -1,51 +1,42 @@
-name: Android15-DeepLink-RDP
+name: Android Parsec Control
 
 on:
   workflow_dispatch:
 
 jobs:
-  setup-android-env:
+  android-parsec:
     runs-on: windows-latest
     timeout-minutes: 3600
+
     steps:
-      - name: Enable Hypervisor Platform for Emulator Acceleration
-        shell: powershell
-        run: |
-          Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -All -NoRestart
-          Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -All -NoRestart
-
-      - name: Install Android Studio
-        shell: powershell
-        run: |
-          winget install --id Google.AndroidStudio --source winget --silent --accept-package-agreements --accept-source-agreements --force
-
-      - name: Install DeepLink PC Version
-        shell: powershell
-        run: |
-          $setupPath = "$env:TEMP\DeeplinkSetup.exe"
-          Invoke-WebRequest -Uri "https://static1.deeplink.cloud/DeeplinkSetup.exe" -OutFile $setupPath
-          Start-Process -FilePath $setupPath -ArgumentList "/S" -Wait
-          Remove-Item $setupPath
-
       - name: Configure Core RDP Settings
-        shell: powershell
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
-          netsh advfirewall firewall delete rule name="RDP-Tailscale" 2>$null
-          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
+          # Enable Remote Desktop and disable Network Level Authentication (if needed)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' \
+                           -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' \
+                           -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                           -Name "SecurityLayer" -Value 0 -Force
+
+          # Remove any existing rule with the same name to avoid duplication
+          netsh advfirewall firewall delete rule name="RDP-Tailscale" 
+
+          # For testing, allow any incoming connection on port 3389
+          netsh advfirewall firewall add rule name="RDP-Tailscale" `
+            dir=in action=allow protocol=TCP localport=3389
+
+          # (Optional) Restart the Remote Desktop service to ensure changes take effect
           Restart-Service -Name TermService -Force
 
       - name: Create RDP User with Secure Password
-        shell: powershell
         run: |
           Add-Type -AssemblyName System.Security
           $charSet = @{
-              Upper   = 65..90
-              Lower   = 97..122
-              Number  = 48..57
-              Special = 33,35,36,37,42,43,44,45,46,47,64,91,92,93,94,95,96,123,124,125,126
+              Upper   = 65..90 | ForEach-Object { [char]$_ }
+              Lower   = 97..122 | ForEach-Object { [char]$_ }
+              Number  = 48..57 | ForEach-Object { [char]$_ }
+              Special = 33,35,36,37,42,43,44,45,46,47,64,91,92,93,94,95,123,124,125,126 | ForEach-Object { [char]$_ }
           }
           $rawPassword = @()
           $rawPassword += Get-Random -InputObject $charSet.Upper -Count 4
@@ -57,39 +48,141 @@ jobs:
           New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
+          
+          echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
           if (-not (Get-LocalUser -Name "RDP")) {
               Write-Error "User creation failed"
               exit 1
           }
 
       - name: Install Tailscale
-        shell: powershell
         run: |
-          winget install --id Tailscale.Tailscale --source winget --silent --accept-package-agreements --accept-source-agreements --force
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
 
       - name: Establish Tailscale Connection
-        shell: powershell
         run: |
-          $tsExe = "C:\Program Files\Tailscale\tailscale.exe"
-          & $tsExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          # Bring up Tailscale with the provided auth key and set a unique hostname
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          
+          # Wait for Tailscale to assign an IP
           $tsIP = $null
           $retries = 0
           while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & $tsExe ip -4
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
               Start-Sleep -Seconds 5
               $retries++
           }
+          
           if (-not $tsIP) {
               Write-Error "Tailscale IP not assigned. Exiting."
               exit 1
           }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-      - name: Verify RDP Accessibility
+      - name: Install BlueStacks
+        run: |
+          # Download latest BlueStacks installer (update URL as needed for 2025 version supporting Android 15)
+          $bsUrl = "https://data1.bluestacks.com/BluestacksFullInstaller_native.exe"  # Placeholder; replace with current direct link
+          $installerPath = "$env:TEMP\bluestacks.exe"
+          Invoke-WebRequest -Uri $bsUrl -OutFile $installerPath
+          Start-Process -FilePath $installerPath -ArgumentList "/S", "/NOLAUNCH" -Wait  # Silent install, no launch
+          Remove-Item $installerPath -Force
+
+      - name: Install Parsec
+        run: |
+          $parsecUrl = "https://builds.parsec.app/package/parsec-windows.exe"
+          $installerPath = "$env:TEMP\parsec.exe"
+          Invoke-WebRequest -Uri $parsecUrl -OutFile $installerPath
+          Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait  # Silent install
+          Remove-Item $installerPath -Force
+
+      - name: Automate Setup as RDP User (Parsec Login & Start Emulator)
         shell: powershell
         run: |
+          $user = "RDP"
+          $pass = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
+          $cred = New-Object System.Management.Automation.PSCredential ($user, $pass)
+          
+          $automateScript = @"
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type -AssemblyName System.Drawing
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public class Win32 {
+              [DllImport("user32.dll")]
+              public static extern bool SetForegroundWindow(IntPtr hWnd);
+              [DllImport("user32.dll")]
+              [return: MarshalAs(UnmanagedType.Bool)]
+              public static extern bool EnumWindows(EnumWindowsProc enumProc, IntPtr lParam);
+              public delegate bool EnumWindowsProc(IntPtr hWnd, int lParam);
+              [DllImport("user32.dll")]
+              public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int count);
+              [DllImport("user32.dll")]
+              public static extern int GetWindowTextLength(IntPtr hWnd);
+          }
+          '@
+
+          function FindWindowTitle($titlePattern) {
+              `$titles = @()
+              `$enumProc = {
+                  param([IntPtr]`$hWnd, [int]`$lParam)
+                  `$length = [Win32]::GetWindowTextLength(`$hWnd)
+                  if (`$length -gt 0) {
+                      `$builder = New-Object System.Text.StringBuilder (`$length + 1)
+                      [Win32]::GetWindowText(`$hWnd, `$builder, `$builder.Capacity) | Out-Null
+                      if (`$builder.ToString() -like `*`$titlePattern*`) {
+                          `$titles += [PSCustomObject]@{HWND=`$hWnd; Title=`$builder.ToString()}
+                      }
+                  }
+                  return `$true
+              }
+              [Win32]::EnumWindows(([Win32+EnumWindowsProc]`$enumProc), [IntPtr]::Zero) | Out-Null
+              return `$titles
+          }
+
+          # Start Parsec
+          Start-Process "C:\Program Files\Parsec\parsecd.exe" -WindowStyle Normal
+          Start-Sleep -Seconds 15  # Wait for UI
+
+          `$parsecWindows = FindWindowTitle "Parsec"
+          if (`$parsecWindows) {
+              `$hwnd = `$parsecWindows[0].HWND
+              [Win32]::SetForegroundWindow(`$hwnd)
+              Start-Sleep -Seconds 3
+              [System.Windows.Forms.SendKeys]::SendWait("`${env:PARSEC_EMAIL}{TAB}`$env:PARSEC_PASSWORD{ENTER}")
+              Start-Sleep -Seconds 10  # Wait for login
+          } else {
+              Write-Warning "Parsec window not found"
+          }
+
+          # Start BlueStacks emulator (assume default instance is Android 15)
+          `$bsPath = "C:\Program Files\BlueStacks_nxt\HD-Player.exe"
+          if (Test-Path `$bsPath) {
+              Start-Process -FilePath `$bsPath -ArgumentList "--instance", "default" -WindowStyle Maximized
+              Start-Sleep -Seconds 30  # Wait for boot
+              # Send F11 for fullscreen
+              [System.Windows.Forms.SendKeys]::SendWait("{F11}")
+          }
+
+          # Keep session active briefly
+          Start-Sleep -Seconds 60
+          "@
+
+          $automateScript | Out-File -FilePath "$env:TEMP\automate.ps1" -Encoding UTF8
+          
+          Start-Process powershell.exe -Credential $cred -ArgumentList "-ExecutionPolicy", "Bypass", "-File", "$env:TEMP\automate.ps1" -Wait
+
+      - name: Verify RDP Accessibility
+        run: |
           Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+          
+          # Test connectivity using Test-NetConnection against the Tailscale IP on port 3389
           $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
           if (-not $testResult.TcpTestSucceeded) {
               Write-Error "TCP connection to RDP port 3389 failed"
@@ -98,23 +191,17 @@ jobs:
           Write-Host "TCP connectivity successful!"
 
       - name: Maintain Connection
-        shell: powershell
         run: |
-          $creds = $env:RDP_CREDS.Split('|')
-          Write-Host "=== RDP ACCESS ==="
-          Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: $($creds[0].Split(':')[1].Trim())"
-          Write-Host "Password: $($creds[1].Trim())"
+          Write-Host "=== ACCESS INFO ==="
+          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+          Write-Host "RDP Username: RDP"
+          Write-Host "RDP Password: $env:RDP_PASSWORD"
+          Write-Host "Parsec: Logged in with ${{ secrets.PARSE C_EMAIL }} - Connect from phone app to see host 'gh-runner-$env:GITHUB_RUN_ID'"
+          Write-Host "BlueStacks Android 15 emulator started in fullscreen."
           Write-Host "=================="
-          Write-Host "=== ANDROID & DEEPLINK SETUP ==="
-          Write-Host "Android Studio installed. Via RDP:"
-          Write-Host "1. Launch Android Studio from Start Menu (first run: accept licenses, download SDK if prompted)."
-          Write-Host "2. In Studio: Tools > AVD Manager > Create Virtual Device > Select Pixel 6 > Download Android 15 (API 35, Google APIs x86_64) > Finish."
-          Write-Host "3. Launch AVD from AVD Manager for full GUI Android 15 env (install/test apps/games)."
-          Write-Host "DeepLink installed. Launch from Start Menu, note Device ID, click eye icon to reveal Password."
-          Write-Host "Use ID/Password in DeepLink app on your phone to connect/control PC (including Android Studio/emulator)."
-          Write-Host "==============================="
+          
+          # Keep runner active indefinitely (or until manually cancelled)
           while ($true) {
-              Write-Host "[$(Get-Date)] Session Active - RDP in to setup/launch Android Studio & AVD, run DeepLink. Ctrl+C to terminate."
+              Write-Host "[$(Get-Date)] Session Active - Parsec host online for mobile control"
               Start-Sleep -Seconds 300
           }
