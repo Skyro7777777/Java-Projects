@@ -1,142 +1,241 @@
-name: Android Emulator & Deeplink PC Host
+name: Android-13+-Emulator-with-DeepLink
 
 on:
   workflow_dispatch:
 
 jobs:
-  setup-rdp-deeplink-pc:
+  android-deeplink:
     runs-on: windows-latest
-    timeout-minutes: 360  # ~6 hours
+    timeout-minutes: 360   # adjust as needed
+
+    env:
+      ANDROID_HOME: C:\Android\sdk
+      CMDLINE_TOOLS_ZIP_URL: https://dl.google.com/android/repository/commandlinetools-win-9477386_latest.zip
+      # fallback list of API levels to try (35,34,33 => Android 15/14/13)
+      ANDROID_API_PREFERRED: "35 34 33"
+      AVD_NAME: github-emulator
+      DEEPLINK_INSTALLER_URL: https://static1.deeplink.cloud/DeeplinkSetup.exe
 
     steps:
-    - name: Configure Core RDP Settings
-      shell: powershell
-      run: |
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
-        netsh advfirewall firewall delete rule name="RDP-Tailscale" 2>$null
-        netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
-        Restart-Service -Name TermService -Force
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Create RDP User with Secure Password
-      shell: powershell
-      run: |
-        Add-Type -AssemblyName System.Security
-        $charSet = @{ Upper = [char[]](65..90); Lower = [char[]](97..122); Number = [char[]](48..57); Special = ([char[]](33..47) + [char[]](58..64) + [char[]](91..96) + [char[]](123..126)) }
-        $rawPassword = @()
-        $rawPassword += $charSet.Upper | Get-Random -Count 4
-        $rawPassword += $charSet.Lower | Get-Random -Count 4
-        $rawPassword += $charSet.Number | Get-Random -Count 4
-        $rawPassword += $charSet.Special | Get-Random -Count 4
-        $password = -join ($rawPassword | Sort-Object { Get-Random })
-        $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-        New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
-        Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-        Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-        echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
+      - name: Prepare Android SDK (command-line tools) and PATH
+        shell: powershell
+        run: |
+          Set-StrictMode -Version Latest
+          $sdkRoot = "${{ env.ANDROID_HOME }}"
+          New-Item -ItemType Directory -Force -Path $sdkRoot | Out-Null
 
-    - name: Install Tailscale
-      shell: powershell
-      run: |
-        $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.90.6-amd64.msi"
-        $installerPath = "$env:TEMP\tailscale.msi"
-        Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-        Start-Process msiexec.exe -ArgumentList "/i `"$installerPath`" /quiet /norestart" -Wait
-        Remove-Item $installerPath -Force
+          Write-Host "Downloading Android command-line tools..."
+          $zip = Join-Path $env:TEMP "cmdline-tools.zip"
+          Invoke-WebRequest -Uri $env:CMDLINE_TOOLS_ZIP_URL -OutFile $zip -UseBasicParsing
 
-    - name: Establish Tailscale Connection
-      shell: powershell
-      run: |
-        & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-        $tsIP = $null
-        $retries = 0
-        while (-not $tsIP -and $retries -lt 10) {
-            $tsIP = (& "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4).Trim()
-            Start-Sleep -Seconds 5
-            $retries++
-        }
-        if (-not $tsIP) { Write-Error "Tailscale IP not assigned."; exit 1 }
-        echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          Write-Host "Extracting..."
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, "$sdkRoot\cmdline-tools-temp")
+          Remove-Item $zip -Force
 
-    - name: Verify RDP Accessibility
-      shell: powershell
-      run: |
-        Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-        $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-        if (-not $testResult.TcpTestSucceeded) { Write-Error "RDP port failed"; exit 1 }
-        Write-Host "RDP ready"
+          # Move into proper folder (cmdline-tools\latest\bin)
+          New-Item -ItemType Directory -Force -Path "$sdkRoot\cmdline-tools" | Out-Null
+          Move-Item -Force "$sdkRoot\cmdline-tools-temp\cmdline-tools\*" "$sdkRoot\cmdline-tools\"
+          Remove-Item -Recurse -Force "$sdkRoot\cmdline-tools-temp"
 
-    - name: Set up Android SDK and Start Emulator
-      shell: powershell
-      run: |
-        $ANDROID_HOME = "$env:USERPROFILE\android-sdk"
-        $env:ANDROID_HOME = $ANDROID_HOME
-        $env:PATH += ";$ANDROID_HOME\platform-tools;$ANDROID_HOME\emulator;$ANDROID_HOME\cmdline-tools\latest\bin"
-        
-        # Download cmdline tools
-        $cmdlineUrl = "https://dl.google.com/android/repository/commandlinetools-win-13114758_latest.zip"
-        $cmdlineZip = "$env:TEMP\cmdline-tools.zip"
-        Invoke-WebRequest -Uri $cmdlineUrl -OutFile $cmdlineZip
-        Expand-Archive -Path $cmdlineZip -DestinationPath "$ANDROID_HOME\cmdline-tools" -Force
-        Move-Item "$ANDROID_HOME\cmdline-tools\cmdline-tools" "$ANDROID_HOME\cmdline-tools\latest" -Force
-        Remove-Item $cmdlineZip
-        
-        # Setup SDK
-        & "$ANDROID_HOME\cmdline-tools\latest\bin\sdkmanager.bat" --update
-        yes | & "$ANDROID_HOME\cmdline-tools\latest\bin\sdkmanager.bat" --licenses
-        
-        # Install Android 15 (API 35)
-        & "$ANDROID_HOME\cmdline-tools\latest\bin\sdkmanager.bat" "platform-tools" "platforms;android-35" "emulator" "system-images;android-35;google_apis;x86_64"
-        
-        # Create AVD
-        echo "no" | & "$ANDROID_HOME\cmdline-tools\latest\bin\avdmanager.bat" create avd -n android15_test -k "system-images;android-35;google_apis;x86_64" -d pixel_6
-        
-        # Start emulator (visible window)
-        Start-Process -FilePath "$ANDROID_HOME\emulator\emulator.exe" -ArgumentList "-avd android15_test -gpu host -no-snapshot-save -m 2048 -no-boot-anim -noaudio"
-        
-        # Wait for boot
-        $timeout = 300
-        while ($timeout -gt 0) {
-          $booted = & adb shell getprop sys.boot_completed 2>$null
-          if ($booted -eq "1") { break }
-          Start-Sleep -Seconds 10
-          $timeout -= 10
-        }
-        adb wait-for-device
-        Write-Host "Android emulator booted (visible on RDP desktop)"
+          # Ensure prerequisites
+          $env:PATH = "$sdkRoot\cmdline-tools\bin;$sdkRoot\platform-tools;$sdkRoot\emulator;$env:PATH"
+          Write-Host "ANDROID_HOME=$sdkRoot"
+          sdkmanager --version
 
-    - name: Install and Launch Deeplink PC Client
-      shell: powershell
-      run: |
-        # Download latest Windows EXE (v1.0.5.8 as of Nov 2025; update from deeplink.cloud)
-        $deeplinkUrl = "https://dl.deeplink.cloud/DeepLink-Setup-v1.0.5.8.exe"
-        $exePath = "$env:TEMP\DeepLink-Setup.exe"
-        Invoke-WebRequest -Uri $deeplinkUrl -OutFile $exePath
-        Start-Process -FilePath $exePath -ArgumentList "/S" -Wait
-        Remove-Item $exePath
-        
-        # Launch Deeplink (default path)
-        $deeplinkPath = "${env:ProgramFiles}\DeepLink\DeepLink.exe"
-        if (Test-Path $deeplinkPath) { Start-Process -FilePath $deeplinkPath }
-        else { Start-Process -FilePath "DeepLink" -ErrorAction SilentlyContinue }
-        
-        Start-Sleep -Seconds 15  # Wait for launch and device ID/password generation
-        Write-Host "Deeplink PC launched. RDP in to view/copy Device ID & Password (eye icon to reveal). Enter on mobile APK for pairing."
+      - name: Accept SDK licenses
+        shell: powershell
+        run: |
+          # Accept all licenses non-interactively
+          echo "y" | sdkmanager --licenses
 
-    - name: Display Access Info and Maintain Connection
-      shell: powershell
-      run: |
-        Write-Host "`n=== ACCESS INFO ==="
-        Write-Host "RDP: $env:TAILSCALE_IP:3389 | User: RDP | Pass: $env:RDP_PASSWORD"
-        Write-Host "RDP to get Deeplink Device ID/Password (generated post-launch)."
-        Write-Host "Mobile: Install Deeplink APK, enter ID/Password to connect/control PC (with Android emulator)."
-        Write-Host "Test apps/games on emulator via mobile session or RDP.`n"
-        
-        # Keep active ~6h
-        $counter = 0
-        while ($counter -lt 72) {
-            Write-Host "[$(Get-Date)] Active - Pair from mobile"
-            Start-Sleep -Seconds 300
-            $counter++
-        }
+      - name: Install platform-tools + emulator
+        shell: powershell
+        run: |
+          sdkmanager "platform-tools" "emulator"
+
+      - name: Install highest available system-image (API >= 33)
+        shell: powershell
+        run: |
+          $apis = $env:ANDROID_API_PREFERRED -split ' '
+          $installed = $false
+          foreach ($api in $apis) {
+            Write-Host "Trying API $api..."
+            # try google_apis x86_64 first, then x86 fallback
+            $packages = @(
+              "system-images;android-$api;google_apis;x86_64",
+              "system-images;android-$api;google_apis;x86",
+              "system-images;android-$api;android-emulator;x86_64",
+              "system-images;android-$api;android-emulator;x86"
+            )
+            foreach ($pkg in $packages) {
+              Write-Host "Attempting to install $pkg ..."
+              try {
+                sdkmanager --install $pkg
+                if ($LASTEXITCODE -eq 0) {
+                  $chosen = $pkg
+                  $installed = $true
+                  break
+                }
+              } catch {
+                Write-Host "Failed to install $pkg; continuing..."
+              }
+            }
+            if ($installed) { break }
+          }
+          if (-not $installed) {
+            Write-Error "Could not install an Android system image for API >= 33. Aborting."
+            exit 1
+          } else {
+            Write-Host "Installed system image: $chosen"
+            # create AVD (force, non-interactive). If avdmanager asks for a device, choose default.
+            # echo "no" answers any "Do you wish to create a custom hardware profile?" prompts.
+            $createCmd = "echo no | avdmanager create avd --force --name $env:AVD_NAME --package `"$chosen`" --device pixel_5"
+            Write-Host "Creating AVD..."
+            Invoke-Expression $createCmd
+          }
+
+      - name: Start Android emulator (visible window)
+        shell: powershell
+        run: |
+          $emulatorExe = Join-Path "${{ env.ANDROID_HOME }}" "emulator\emulator.exe"
+          if (-not (Test-Path $emulatorExe)) { Write-Error "emulator not found at $emulatorExe"; exit 1 }
+          Write-Host "Starting emulator $env:AVD_NAME (visible window)..."
+          # launch emulator without -no-window so it opens a GUI window on windows-latest desktop
+          Start-Process -FilePath $emulatorExe -ArgumentList "-avd",$env:AVD_NAME,"-no-snapshot-save","-partition-size","512" -NoNewWindow
+          Write-Host "Waiting for emulator to come online..."
+          # wait for adb to appear
+          $adb = Join-Path "${{ env.ANDROID_HOME }}" "platform-tools\adb.exe"
+          $max=300
+          $i=0
+          while ($i -lt $max) {
+            Start-Sleep -Seconds 2
+            $devices = & $adb devices
+            if ($devices -match "emulator-") { break }
+            $i++
+          }
+          if ($i -ge $max) { Write-Error "Emulator device did not appear in time"; exit 1 }
+          Write-Host "Emulator started; waiting for boot completion (sys.boot_completed)..."
+          $bootWait=0
+          while ($bootWait -lt 300) {
+            Start-Sleep -Seconds 2
+            $out = & $adb shell getprop sys.boot_completed 2>$null
+            if ($out -match "1") { break }
+            $bootWait += 2
+          }
+          if ($bootWait -ge 300) { Write-Error "Emulator failed to boot in time"; exit 1 }
+          Write-Host "Emulator is booted and ready."
+
+      - name: Download & launch DeepLink PC client
+        shell: powershell
+        run: |
+          $installer = Join-Path $env:TEMP "DeeplinkSetup.exe"
+          Write-Host "Downloading DeepLink installer..."
+          Invoke-WebRequest -Uri $env:DEEPLINK_INSTALLER_URL -OutFile $installer -UseBasicParsing -ErrorAction Stop
+          Write-Host "Running DeepLink installer (best-effort). If this installer prompts UI you may need to run a runner with interactive access."
+          # Try common silent switches; if they fail we'll just start the installer interactively
+          $silentSwitches = @("/S", "/silent", "/verysilent", "/quiet")
+          $installed = $false
+          foreach ($s in $silentSwitches) {
+            try {
+              Start-Process -FilePath $installer -ArgumentList $s -Wait -NoNewWindow -ErrorAction Stop
+              $installed = $true
+              break
+            } catch {
+              Write-Host "Silent switch $s didn't work or installer returned non-zero. Trying next."
+            }
+          }
+          if (-not $installed) {
+            Write-Host "Falling back to interactive install start - installer may need interactive clicks to finish."
+            Start-Process -FilePath $installer -Wait
+          }
+          Remove-Item $installer -Force -ErrorAction SilentlyContinue
+
+          # attempt to launch DeepLink if not auto-started by installer
+          $possibleNames = @("DeepLink","Deeplink","DeepLinkClient","DeeplinkSetup")
+          $proc = Get-Process | Where-Object { $possibleNames -contains $_.ProcessName } | Select-Object -First 1
+          if (-not $proc) {
+            Write-Host "Trying to launch app from common install locations..."
+            $paths = @(
+              "$env:ProgramFiles\DeepLink\Deeplink.exe",
+              "$env:ProgramFiles\DeepLink\DeepLink.exe",
+              "$env:ProgramFiles (x86)\DeepLink\Deeplink.exe",
+              "$env:ProgramFiles\Deeplink\Deeplink.exe"
+            )
+            $launched = $false
+            foreach ($p in $paths) {
+              if (Test-Path $p) {
+                Start-Process -FilePath $p
+                $launched = $true
+                break
+              }
+            }
+            if (-not $launched) { Write-Host "Could not locate installed Deeplink exe automatically; please review installer logs or use a self-hosted runner where you can interact." }
+          } else {
+            Write-Host "DeepLink appears to be running (PID $($proc.Id))."
+          }
+
+      - name: Reveal DeepLink password with AutoHotkey (best-effort)
+        shell: powershell
+        run: |
+          # This step is best-effort: UI automation is fragile on hosted runners.
+          # It downloads AutoHotKey portable, creates a script that finds the DeepLink window and clicks
+          # near the right side of the password field. You may need to update coordinates for reliable clicks.
+          $ahkZipUrl = "https://www.autohotkey.com/download/AutoHotkey.zip"
+          $ahkZip = Join-Path $env:TEMP "ahk.zip"
+          Try {
+            Invoke-WebRequest -Uri $ahkZipUrl -OutFile $ahkZip -UseBasicParsing -ErrorAction Stop
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            [System.IO.Compression.ZipFile]::ExtractToDirectory($ahkZip, "$env:TEMP\ahk")
+          } Catch {
+            Write-Host "Could not download AutoHotkey zip; skipping AHK automation. You can install AHK on a self-hosted runner or run the click manually."
+            exit 0
+          }
+          $ahkExe = Get-ChildItem "$env:TEMP\ahk" -Filter "AutoHotkey.exe" -Recurse | Select-Object -First 1
+          if (-not $ahkExe) { Write-Host "AutoHotkey exe not found in archive; skipping"; exit 0 }
+
+          $script = @'
+          ; AutoHotkey script: try to find DeepLink window and click the "show password" area
+          WinWaitActive, DeepLink, , 10
+          if ErrorLevel
+          {
+            ; try alternate title
+            WinWaitActive, Deeplink, , 10
+          }
+          Sleep 500
+          ; get window position
+          WinGetPos, X, Y, W, H, A
+          ; approximate click coordinates: near right side, vertically centered in password row
+          ; adjust +Xoffset and +Yoffset if necessary
+          Xoffset := W - 80
+          Yoffset := 145
+          Click % X + Xoffset, % Y + Yoffset
+          ; give UI time to reveal password
+          Sleep 1000
+          ; copy clipboard from password control - fallback: take screenshot for manual reading
+          ; (Reading text from another app control is non-trivial; this click will show the password visually)
+          Return
+'@
+
+          $scriptPath = Join-Path $env:TEMP "reveal_deeplink_pass.ahk"
+          $script | Out-File -FilePath $scriptPath -Encoding ASCII
+
+          Start-Process -FilePath $ahkExe.FullName -ArgumentList $scriptPath
+
+          Write-Host "AutoHotkey launched to attempt click to reveal password. If the password was revealed visually, use DeepLink mobile app to connect to the displayed Device ID + Password."
+
+      - name: Keep job alive for interactive session
+        shell: powershell
+        run: |
+          Write-Host "Emulator + DeepLink are started. The workflow will keep running so you can connect from your phone via DeepLink."
+          Write-Host "Note: this runner will be destroyed when the job finishes. Cancel the job manually when done."
+          # Print a short reminder of where DeepLink typically shows device id & password (UI).
+          Write-Host "DeepLink typically shows Device ID and a hidden Password in its main window; reveal password with the 'show' icon."
+          # Keep the job alive (poll) — user can cancel workflow when done
+          for ($i=0; $i -lt 2880; $i++) {
+            Write-Host "[$(Get-Date -Format o)] Interactive session active... Press Cancel on the workflow run when finished."
+            Start-Sleep -Seconds 20
+          }
