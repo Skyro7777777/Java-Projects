@@ -10,21 +10,23 @@ jobs:
 
     steps:
       - name: Setup Android SDK Environment
+        shell: pwsh
         run: |
           # Create Android SDK directory
           mkdir C:\Android
           mkdir C:\Android\cmdline-tools
           $env:ANDROID_HOME = "C:\Android"
           $env:ANDROID_SDK_ROOT = "C:\Android"
-          echo "ANDROID_HOME=$env:ANDROID_HOME" >> $env:GITHUB_ENV
-          echo "ANDROID_SDK_ROOT=$env:ANDROID_SDK_ROOT" >> $env:GITHUB_ENV
-          
+          echo "ANDROID_HOME=$env:ANDROID_HOME" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "ANDROID_SDK_ROOT=$env:ANDROID_SDK_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
+
           # Add Android tools to PATH
-          echo "$env:ANDROID_HOME\cmdline-tools\latest\bin" >> $env:GITHUB_PATH
-          echo "$env:ANDROID_HOME\platform-tools" >> $env:GITHUB_PATH
-          echo "$env:ANDROID_HOME\emulator" >> $env:GITHUB_PATH
+          echo "$env:ANDROID_HOME\cmdline-tools\latest\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          echo "$env:ANDROID_HOME\platform-tools" | Out-File -FilePath $env:GITHUB_PATH -Append
+          echo "$env:ANDROID_HOME\emulator" | Out-File -FilePath $env:GITHUB_PATH -Append
 
       - name: Download Android Command-line Tools
+        shell: pwsh
         run: |
           $toolsUrl = "https://dl.google.com/android/repository/commandlinetools-win-11076708_latest.zip"
           $zipPath = "$env:TEMP\cmdline-tools.zip"
@@ -35,47 +37,50 @@ jobs:
           Remove-Item $zipPath -Force
 
       - name: Install Android SDK Components
+        shell: pwsh
         run: |
           # Accept licenses automatically
           $yes = "y"
-          $yes | sdkmanager.bat --licenses --verbose
+          $yes | & "$env:ANDROID_HOME\cmdline-tools\latest\bin\sdkmanager.bat" --licenses --verbose
           
           # Install required components for Android 15 (API 35)
-          sdkmanager.bat "platform-tools" "platforms;android-35" "emulator" "system-images;android-35;google_apis;x86_64" "build-tools;35.0.0" --verbose
-          
+          & "$env:ANDROID_HOME\cmdline-tools\latest\bin\sdkmanager.bat" "platform-tools" "platforms;android-35" "emulator" "system-images;android-35;google_apis;x86_64" "build-tools;35.0.0" --verbose
+
           # Verify installation
-          emulator -version
-          adb version
+          & "$env:ANDROID_HOME\emulator\emulator.exe" -version
+          & "$env:ANDROID_HOME\platform-tools\adb.exe" version
 
       - name: Create Android Virtual Device
+        shell: pwsh
         run: |
           # Create AVD for Android 15
           $avdName = "Android15-GUI"
-          avdmanager create avd -n $avdName -k "system-images;android-35;google_apis;x86_64" -d "pixel_6" --force
+          & "$env:ANDROID_HOME\cmdline-tools\latest\bin\avdmanager.bat" create avd -n $avdName -k "system-images;android-35;google_apis;x86_64" -d "pixel_6" --force
           
           # Configure AVD settings
           $avdConfig = @"
-          hw.device.name=pixel_6
-          hw.cpu.arch=x86_64
-          hw.ramSize=4096
-          hw.screen.width=1080
-          hw.screen.height=2400
-          hw.density=440
-          hw.gpu.enabled=yes
-          hw.keyboard=yes
-          hw.audioInput=yes
-          hw.audioOutput=yes
-          vm.heapSize=512
-          disk.dataPartition.size=8192M
-          PlayStore.enabled=0
-          abi.type=x86_64
-          image.sysdir.1=system-images\android-35\google_apis\x86_64\
+hw.device.name=pixel_6
+hw.cpu.arch=x86_64
+hw.ramSize=4096
+hw.screen.width=1080
+hw.screen.height=2400
+hw.density=440
+hw.gpu.enabled=yes
+hw.keyboard=yes
+hw.audioInput=yes
+hw.audioOutput=yes
+vm.heapSize=512
+disk.dataPartition.size=8192M
+PlayStore.enabled=0
+abi.type=x86_64
+image.sysdir.1=system-images\android-35\google_apis\x86_64\
 "@
-          
+
           $configPath = "$env:USERPROFILE\.android\avd\$avdName.avd\config.ini"
           $avdConfig | Out-File -FilePath $configPath -Encoding ASCII -Force
 
       - name: Install Parsec Silently
+        shell: pwsh
         run: |
           # Download Parsec installer
           $parsecUrl = "https://builds.parsecgaming.com/parsec-windows.exe"
@@ -95,6 +100,7 @@ jobs:
           }
 
       - name: Install Tailscale
+        shell: pwsh
         run: |
           $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.80.0-amd64.msi"
           $installerPath = "$env:TEMP\tailscale.msi"
@@ -104,18 +110,19 @@ jobs:
           Remove-Item $installerPath -Force
 
       - name: Configure Tailscale Connection
+        shell: pwsh
         run: |
           # Start Tailscale service
           Start-Service -Name "Tailscale"
           
           # Authenticate with Tailscale using secret
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey "${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname "android15-runner-$env:GITHUB_RUN_ID"
+          & "${env:ProgramFiles}\Tailscale\tailscale.exe" up --authkey "${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname "android15-runner-$env:GITHUB_RUN_ID"
           
           # Wait for IP assignment
           $tsIP = $null
           $retries = 0
           while (-not $tsIP -and $retries -lt 10) {
-            $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+            $tsIP = & "${env:ProgramFiles}\Tailscale\tailscale.exe" ip -4
             Start-Sleep -Seconds 5
             $retries++
           }
@@ -125,10 +132,11 @@ jobs:
             exit 1
           }
           
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          echo "TAILSCALE_IP=$tsIP" | Out-File -FilePath $env:GITHUB_ENV -Append
           Write-Host "Tailscale IP: $tsIP"
 
       - name: Start Android Emulator with GUI
+        shell: pwsh
         run: |
           $avdName = "Android15-GUI"
           
@@ -140,14 +148,15 @@ jobs:
           Start-Sleep -Seconds 120
           
           # Verify emulator is running
-          adb devices
-          $deviceCount = (adb devices | Select-String -Pattern "device$" | Measure-Object).Count
+          & adb devices
+          $deviceCount = (& adb devices | Select-String -Pattern "device$" | Measure-Object).Count
           if ($deviceCount -eq 0) {
             Write-Error "Android emulator failed to start"
             exit 1
           }
 
       - name: Start Parsec Service
+        shell: pwsh
         run: |
           # Start Parsec service
           $parsecPath = "${env:ProgramFiles}\Parsec\parsecd.exe"
@@ -157,6 +166,7 @@ jobs:
           Start-Sleep -Seconds 10
 
       - name: Display Connection Information
+        shell: pwsh
         run: |
           Write-Host "=========================================="
           Write-Host "ANDROID 15 ENVIRONMENT READY FOR REMOTE ACCESS"
@@ -175,6 +185,7 @@ jobs:
           Write-Host "=========================================="
 
       - name: Keep Session Alive
+        shell: pwsh
         run: |
           Write-Host "Maintaining active session for remote access..."
           Write-Host "Session will remain active for 60 minutes"
@@ -183,7 +194,7 @@ jobs:
           $endTime = (Get-Date).AddMinutes(59)
           while ((Get-Date) -lt $endTime) {
             # Check if emulator is still running
-            $deviceCount = (adb devices | Select-String -Pattern "device$" | Measure-Object).Count
+            $deviceCount = (& adb devices | Select-String -Pattern "device$" | Measure-Object).Count
             
             if ($deviceCount -eq 0) {
               Write-Warning "Android emulator stopped. Attempting to restart..."
@@ -206,4 +217,3 @@ jobs:
           }
           
           Write-Host "Session duration reached. Workflow will terminate shortly."
-        shell: powershell
