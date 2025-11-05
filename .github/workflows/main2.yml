@@ -60,13 +60,23 @@ jobs:
           if (-not $tsIP) { Write-Error "Tailscale IP not assigned."; exit 1 }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-      - name: Install BlueStacks (Android 15)
+      - name: Setup Android SDK Command Line Tools
         run: |
-          $bsUrl = "https://data1.bluestacks.com/BluestacksFullInstaller_native.exe"
-          $installerPath = "$env:TEMP\bluestacks.exe"
-          Invoke-WebRequest -Uri $bsUrl -OutFile $installerPath
-          Start-Process -FilePath $installerPath -ArgumentList "/S", "/NOLAUNCH" -Wait
-          Remove-Item $installerPath -Force
+          New-Item -ItemType Directory -Force -Path "C:\Android"
+          $url = "https://dl.google.com/android/repository/commandlinetools-win-12204022_latest.zip"
+          $zipPath = "$env:TEMP\cmdtools.zip"
+          Invoke-WebRequest -Uri $url -OutFile $zipPath
+          Expand-Archive -Path $zipPath -DestinationPath "C:\Android\cmdline-tools" -Force
+          Move-Item "C:\Android\cmdline-tools\cmdline-tools" "C:\Android\cmdline-tools\latest" -Force
+          $env:ANDROID_HOME = "C:\Android"
+          echo "ANDROID_HOME=C:\Android" >> $env:GITHUB_ENV
+          echo "C:\Android\cmdline-tools\latest\bin;C:\Android\emulator;C:\Android\platform-tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install Android 15 Components
+        run: |
+          sdkmanager --sdk_root=%ANDROID_HOME% --licenses
+          sdkmanager --sdk_root=%ANDROID_HOME% "platforms;android-35" "emulator" "platform-tools" "system-images;android-35;google_apis;x86_64"
+          avdmanager create avd --name android15 --package "system-images;android-35;google_apis;x86_64" --force
 
       - name: Install Parsec
         run: |
@@ -81,7 +91,7 @@ jobs:
           echo "PARSEC_EMAIL=${{ secrets.PARSEC_EMAIL }}" >> $env:GITHUB_ENV
           echo "PARSEC_PASSWORD=${{ secrets.PARSEC_PASSWORD }}" >> $env:GITHUB_ENV
 
-      - name: Automate Parsec Login & Launch Android
+      - name: Automate Parsec Login & Launch Android 15 Emulator
         shell: powershell
         run: |
           $user = "RDP"
@@ -90,7 +100,7 @@ jobs:
           
           $script = @'
           Add-Type -AssemblyName System.Windows.Forms
-          Add-Type @'
+          Add-Type @"
           using System;
           using System.Runtime.InteropServices;
           public class Win32 {
@@ -100,33 +110,30 @@ jobs:
               [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder t, int c);
               [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hWnd);
           }
-          '@
+          "@
           function Find-Window($p) {
-              $t = @(); $e = { param($h,$l) $l = [Win32]::GetWindowTextLength($h); if($l){$b=New-Object Text.StringBuilder ($l+1); [Win32]::GetWindowText($h,$b,$b.Capacity)|Out-Null; if($b.ToString()-like "*$p*"){$t+=$h}} $true }
-              [Win32]::EnumWindows($e,[IntPtr]::Zero)|Out-Null; return $t
+              $titles = @(); $len = 0; $enumProc = { param($h, $l) $len = [Win32]::GetWindowTextLength($h); if ($len -gt 0) { $b = New-Object System.Text.StringBuilder($len + 1); [Win32]::GetWindowText($h, $b, $b.Capacity) | Out-Null; if ($b.ToString() -like "*$p*") { $titles += $h } }; $true }; [Win32]::EnumWindows($enumProc, [IntPtr]::Zero) | Out-Null; return $titles
           }
           Start-Process "C:\Program Files\Parsec\parsecd.exe"
           Start-Sleep 15
-          $hw = Find-Window "Parsec"
-          if($hw){ [Win32]::SetForegroundWindow($hw[0]); Start-Sleep 2; [System.Windows.Forms.SendKeys]::SendWait("$env:PARSEC_EMAIL{TAB}$env:PARSEC_PASSWORD{ENTER}") }
-          Start-Sleep 10
-          $bs = "C:\Program Files\BlueStacks_nxt\HD-Player.exe"
-          if(Test-Path $bs){ Start-Process $bs -ArgumentList "--instance","Pie64" -WindowStyle Maximized; Start-Sleep 30; [System.Windows.Forms.SendKeys]::SendWait("{F11}") }
+          $parsecHwnds = Find-Window "Parsec"
+          if ($parsecHwnds) { [Win32]::SetForegroundWindow($parsecHwnds[0]); Start-Sleep 3; [System.Windows.Forms.SendKeys]::SendWait("$env:PARSEC_EMAIL{TAB}$env:PARSEC_PASSWORD{ENTER}"); Start-Sleep 15 }
+          $emulatorPath = "$env:ANDROID_HOME\emulator\emulator.exe"
+          if (Test-Path $emulatorPath) { Start-Process $emulatorPath -ArgumentList "-avd", "android15" -WindowStyle Maximized; Start-Sleep 180 }  # Boot time ~3min
           Start-Sleep 60
           '@
-          $script | Out-File "$env:TEMP\a.ps1" -Encoding UTF8
-          Start-Process powershell -Credential $cred -ArgumentList "-NoProfile","-ExecutionPolicy","Bypass","-File","$env:TEMP\a.ps1" -Wait
+          $script | Out-File "$env:TEMP\automate.ps1" -Encoding UTF8
+          Start-Process powershell.exe -Credential $cred -ArgumentList "-ExecutionPolicy", "Bypass", "-File", "$env:TEMP\automate.ps1" -Wait
 
       - name: Verify RDP
         run: |
           $t = Test-NetConnection $env:TAILSCALE_IP -Port 3389
-          if(!$t.TcpTestSucceeded){ Write-Error "RDP port closed"; exit 1 }
+          if (!$t.TcpTestSucceeded) { Write-Error "RDP port closed"; exit 1 }
 
       - name: Keep Alive
         run: |
           Write-Host "=== CONNECT ==="
           Write-Host "Tailscale IP: $env:TAILSCALE_IP"
           Write-Host "RDP: RDP / $env:RDP_PASSWORD"
-          Write-Host "Parsec: Host 'gh-runner-$env:GITHUB_RUN_ID' (logged in)"
-          Write-Host "Android 15 GUI running in BlueStacks"
-          while($true){ Write-Host "[$(Get-Date)] Active"; Start-Sleep 300 }
+          Write-Host "Parsec: Logged in - Connect from app to host 'gh-runner-$env:GITHUB_RUN_ID' (Android 15 home screen ready)"
+          while ($true) { Write-Host "[$(Get-Date)] Active"; Start-Sleep 300 }
