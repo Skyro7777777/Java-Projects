@@ -74,9 +74,9 @@ jobs:
 
       - name: Install Android 15 Components
         run: |
-          sdkmanager --sdk_root=$env:ANDROID_HOME --licenses
+          yes | sdkmanager --sdk_root=$env:ANDROID_HOME --licenses
           sdkmanager --sdk_root=$env:ANDROID_HOME "platforms;android-35" "emulator" "platform-tools" "system-images;android-35;google_apis;x86_64"
-          avdmanager create avd --name android15 --package "system-images;android-35;google_apis;x86_64" --force
+          echo no | avdmanager create avd --name android15 --package "system-images;android-35;google_apis;x86_64"
 
       - name: Install Parsec
         run: |
