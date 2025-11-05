@@ -1,4 +1,4 @@
-name: GitHub RDP Server with Android Emulator & Deeplink PC Host
+name: Android Emulator & Deeplink PC Host
 
 on:
   workflow_dispatch:
@@ -39,7 +39,7 @@ jobs:
     - name: Install Tailscale
       shell: powershell
       run: |
-        $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.90.6-amd64.msi"  # Update to latest
+        $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.90.6-amd64.msi"
         $installerPath = "$env:TEMP\tailscale.msi"
         Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
         Start-Process msiexec.exe -ArgumentList "/i `"$installerPath`" /quiet /norestart" -Wait
@@ -109,41 +109,34 @@ jobs:
     - name: Install and Launch Deeplink PC Client
       shell: powershell
       run: |
-        # Download latest Windows EXE (v1.0.5.8 as of Nov 2025; update URL/version from deeplink.cloud/software)
-        $deeplinkUrl = "https://dl.deeplink.cloud/DeepLink-Setup-v1.0.5.8.exe"  # Verify exact from site
+        # Download latest Windows EXE (v1.0.5.8 as of Nov 2025; update from deeplink.cloud)
+        $deeplinkUrl = "https://dl.deeplink.cloud/DeepLink-Setup-v1.0.5.8.exe"
         $exePath = "$env:TEMP\DeepLink-Setup.exe"
         Invoke-WebRequest -Uri $deeplinkUrl -OutFile $exePath
-        Start-Process -FilePath $exePath -ArgumentList "/S" -Wait  # Silent install if supported; else /quiet
+        Start-Process -FilePath $exePath -ArgumentList "/S" -Wait
         Remove-Item $exePath
         
-        # Launch Deeplink (assume installed to default path; adjust if needed)
-        $deeplinkPath = "${env:ProgramFiles}\DeepLink\DeepLink.exe"  # Or search registry/start menu
+        # Launch Deeplink (default path)
+        $deeplinkPath = "${env:ProgramFiles}\DeepLink\DeepLink.exe"
         if (Test-Path $deeplinkPath) { Start-Process -FilePath $deeplinkPath }
-        else { Start-Process -FilePath "DeepLink" -ErrorAction SilentlyContinue }  # Via start menu
+        else { Start-Process -FilePath "DeepLink" -ErrorAction SilentlyContinue }
         
-        Start-Sleep -Seconds 10  # Wait for launch
-        
-        # Attempt auto-login (requires app window focus; brittle - adjust coords/title via RDP testing)
-        Add-Type -AssemblyName System.Windows.Forms
-        [System.Windows.Forms.SendKeys]::SendWait("${{ secrets.EMAIL }}{TAB}")
-        Start-Sleep -Seconds 1
-        [System.Windows.Forms.SendKeys]::SendWait("${{ secrets.PASSWORD }}{ENTER}")
-        Write-Host "Deeplink PC client launched and login attempted. Verify via RDP if needed."
+        Start-Sleep -Seconds 15  # Wait for launch and device ID/password generation
+        Write-Host "Deeplink PC launched. RDP in to view/copy Device ID & Password (eye icon to reveal). Enter on mobile APK for pairing."
 
     - name: Display Access Info and Maintain Connection
       shell: powershell
       run: |
         Write-Host "`n=== ACCESS INFO ==="
         Write-Host "RDP: $env:TAILSCALE_IP:3389 | User: RDP | Pass: $env:RDP_PASSWORD"
-        Write-Host "Use RDP to verify emulator/Deeplink setup (manual login if auto fails)."
-        Write-Host "Mobile: Install Deeplink APK on phone, login same account, connect to this PC instance."
-        Write-Host "Control PC (with Android emulator visible) from phone via Deeplink cloud relay."
-        Write-Host "Install/test apps on emulator: Via RDP or adb in phone session if bridged.`n"
+        Write-Host "RDP to get Deeplink Device ID/Password (generated post-launch)."
+        Write-Host "Mobile: Install Deeplink APK, enter ID/Password to connect/control PC (with Android emulator)."
+        Write-Host "Test apps/games on emulator via mobile session or RDP.`n"
         
         # Keep active ~6h
         $counter = 0
         while ($counter -lt 72) {
-            Write-Host "[$(Get-Date)] Active - Control from mobile Deeplink"
+            Write-Host "[$(Get-Date)] Active - Pair from mobile"
             Start-Sleep -Seconds 300
             $counter++
         }
