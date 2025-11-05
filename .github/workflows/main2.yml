@@ -63,7 +63,7 @@ jobs:
       - name: Setup Android SDK Command Line Tools
         run: |
           New-Item -ItemType Directory -Force -Path "C:\Android"
-          $url = "https://dl.google.com/android/repository/commandlinetools-win-12204022_latest.zip"
+          $url = "https://dl.google.com/android/repository/commandlinetools-win-11076708_latest.zip"
           $zipPath = "$env:TEMP\cmdtools.zip"
           Invoke-WebRequest -Uri $url -OutFile $zipPath
           Expand-Archive -Path $zipPath -DestinationPath "C:\Android\cmdline-tools" -Force
@@ -74,8 +74,8 @@ jobs:
 
       - name: Install Android 15 Components
         run: |
-          sdkmanager --sdk_root=%ANDROID_HOME% --licenses
-          sdkmanager --sdk_root=%ANDROID_HOME% "platforms;android-35" "emulator" "platform-tools" "system-images;android-35;google_apis;x86_64"
+          sdkmanager --sdk_root=$env:ANDROID_HOME --licenses
+          sdkmanager --sdk_root=$env:ANDROID_HOME "platforms;android-35" "emulator" "platform-tools" "system-images;android-35;google_apis;x86_64"
           avdmanager create avd --name android15 --package "system-images;android-35;google_apis;x86_64" --force
 
       - name: Install Parsec
@@ -119,7 +119,7 @@ jobs:
           $parsecHwnds = Find-Window "Parsec"
           if ($parsecHwnds) { [Win32]::SetForegroundWindow($parsecHwnds[0]); Start-Sleep 3; [System.Windows.Forms.SendKeys]::SendWait("$env:PARSEC_EMAIL{TAB}$env:PARSEC_PASSWORD{ENTER}"); Start-Sleep 15 }
           $emulatorPath = "$env:ANDROID_HOME\emulator\emulator.exe"
-          if (Test-Path $emulatorPath) { Start-Process $emulatorPath -ArgumentList "-avd", "android15" -WindowStyle Maximized; Start-Sleep 180 }  # Boot time ~3min
+          if (Test-Path $emulatorPath) { Start-Process $emulatorPath -ArgumentList "-avd", "android15" -WindowStyle Maximized; Start-Sleep 180 }
           Start-Sleep 60
           '@
           $script | Out-File "$env:TEMP\automate.ps1" -Encoding UTF8
