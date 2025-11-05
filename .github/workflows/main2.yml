@@ -1,53 +1,111 @@
-name: Android 15 with Parsec Remote Control
+name: Android 15 GUI Environment with Parsec
 
 on:
   workflow_dispatch:
 
 jobs:
-  android-parsec-setup:
+  android-parsec-environment:
     runs-on: windows-latest
     timeout-minutes: 3600
 
     steps:
-      - name: Configure Core RDP Settings
+      - name: Configure System for Android SDK
         run: |
-          # Enable Remote Desktop and disable Network Level Authentication
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+          # Create Android SDK directory without spaces in path
+          mkdir C:\Android
+          mkdir C:\Android\android-sdk
+          $env:ANDROID_SDK_ROOT = "C:\Android\android-sdk"
+          $env:ANDROID_HOME = "C:\Android\android-sdk"
+          echo "ANDROID_SDK_ROOT=$env:ANDROID_SDK_ROOT" >> $env:GITHUB_ENV
+          echo "ANDROID_HOME=$env:ANDROID_HOME" >> $env:GITHUB_ENV
+          
+          # Add to PATH
+          $env:PATH = "$env:ANDROID_SDK_ROOT\tools;$env:ANDROID_SDK_ROOT\tools\bin;$env:ANDROID_SDK_ROOT\platform-tools;$env:PATH"
+          echo "$env:ANDROID_SDK_ROOT\tools" >> $env:GITHUB_PATH
+          echo "$env:ANDROID_SDK_ROOT\tools\bin" >> $env:GITHUB_PATH
+          echo "$env:ANDROID_SDK_ROOT\platform-tools" >> $env:GITHUB_PATH
 
-          # Configure firewall for RDP
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
-          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
-
-          # Restart Remote Desktop service
-          Restart-Service -Name TermService -Force
-
-      - name: Create RDP User with Secure Password
+      - name: Download Android SDK Command-line Tools
         run: |
-          Add-Type -AssemblyName System.Security
-          $charSet = @{
-              Upper   = [char[]]([char]'A'..[char]'Z')
-              Lower   = [char[]]([char]'a'..[char]'z')
-              Number  = [char[]]([char]'0'..[char]'9')
-              Special = [char[]]([char]'!'..[char]'/') + [char[]]([char]':'..[char]'@') + [char[]]([char]'['..[char]'`') + [char[]]([char]'{'..[char]'~')
+          $sdkToolsUrl = "https://dl.google.com/android/repository/commandlinetools-win-11076708_latest.zip"
+          $zipPath = "$env:TEMP\cmdline-tools.zip"
+          $toolsDir = "$env:ANDROID_SDK_ROOT\tools"
+          
+          Invoke-WebRequest -Uri $sdkToolsUrl -OutFile $zipPath
+          Expand-Archive -Path $zipPath -DestinationPath $toolsDir -Force
+          Remove-Item $zipPath -Force
+          
+          # Rename the extracted folder to avoid path issues
+          if (Test-Path "$toolsDir\cmdline-tools") {
+            Move-Item "$toolsDir\cmdline-tools" "$toolsDir\latest"
           }
-          $rawPassword = @()
-          $rawPassword += $charSet.Upper | Get-Random -Count 4
-          $rawPassword += $charSet.Lower | Get-Random -Count 4
-          $rawPassword += $charSet.Number | Get-Random -Count 4
-          $rawPassword += $charSet.Special | Get-Random -Count 4
-          $password = -join ($rawPassword | Sort-Object { Get-Random })
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "AndroidUser" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "AndroidUser"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "AndroidUser"
+
+      - name: Install Android SDK Components
+        run: |
+          # Accept licenses first
+          $yes = "y"
+          $yes | & "$env:ANDROID_SDK_ROOT\tools\bin\sdkmanager.bat" --licenses --verbose
           
-          echo "RDP_CREDS=User: AndroidUser | Password: $password" >> $env:GITHUB_ENV
+          # Install required components for Android 15 (API 35)
+          & "$env:ANDROID_SDK_ROOT\tools\bin\sdkmanager.bat" "platform-tools" "platforms;android-35" "emulator" "system-images;android-35;google_apis;x86_64" "build-tools;35.0.0" --verbose
+
+      - name: Create Android Virtual Device
+        run: |
+          # Create AVD for Android 15
+          $avdName = "Android15-GUI"
+          $sdkPath = $env:ANDROID_SDK_ROOT
           
-          if (-not (Get-LocalUser -Name "AndroidUser")) {
-              Write-Error "User creation failed"
-              exit 1
+          & "$sdkPath\tools\bin\avdmanager.bat" create avd `
+            -n $avdName `
+            -k "system-images;android-35;google_apis;x86_64" `
+            -d "pixel_6" `
+            --force
+          
+          # Configure AVD for better performance
+          $avdConfig = @"
+          hw.device.name=pixel_6
+          hw.cpu.arch=x86_64
+          hw.ramSize=4096
+          hw.screen.width=1080
+          hw.screen.height=2400
+          hw.density=440
+          hw.gpu.enabled=yes
+          hw.gpu.mode=auto
+          hw.keyboard=yes
+          hw.audioInput=yes
+          hw.audioOutput=yes
+          hw.camera.back=none
+          hw.camera.front=none
+          vm.heapSize=512
+          disk.dataPartition.size=8192M
+          skin.name=1080x2400
+          skin.path=$sdkPath\skins\pixel_6
+          PlayStore.enabled=0
+          abi.type=x86_64
+          image.sysdir.1=system-images\android-35\google_apis\x86_64\
+"@
+          
+          $avdConfig | Out-File -FilePath "$env:USERPROFILE\.android\avd\$avdName.avd\config.ini" -Encoding ASCII -Force
+
+      - name: Install Parsec Silently
+        run: |
+          # Download Parsec installer
+          $parsecUrl = "https://builds.parsecgaming.com/parsec-windows.exe"
+          $installerPath = "$env:TEMP\parsec-installer.exe"
+          
+          Invoke-WebRequest -Uri $parsecUrl -OutFile $installerPath
+          
+          # Install Parsec silently with team configuration
+          # /S for silent install, /team_id for team configuration
+          Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait -NoNewWindow
+          
+          Remove-Item $installerPath -Force
+          
+          # Verify installation
+          $parsecPath = "${env:ProgramFiles}\Parsec\parsecd.exe"
+          if (-not (Test-Path $parsecPath)) {
+            Write-Error "Parsec installation failed"
+            exit 1
           }
 
       - name: Install Tailscale
@@ -59,222 +117,97 @@ jobs:
           Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
           Remove-Item $installerPath -Force
 
-      - name: Establish Tailscale Connection
+      - name: Configure Tailscale Connection
         run: |
-          # Bring up Tailscale with the provided auth key
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=android-runner-$env:GITHUB_RUN_ID
+          # Start Tailscale service
+          Start-Service -Name "Tailscale"
           
-          # Wait for Tailscale to assign an IP
+          # Authenticate with Tailscale
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname="android15-runner-$env:GITHUB_RUN_ID"
+          
+          # Wait for IP assignment
           $tsIP = $null
           $retries = 0
           while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Start-Sleep -Seconds 5
-              $retries++
+            $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+            Start-Sleep -Seconds 5
+            $retries++
           }
           
           if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned. Exiting."
-              exit 1
+            Write-Error "Tailscale IP not assigned"
+            exit 1
           }
+          
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-
-      - name: Install Android SDK Command Line Tools
-        run: |
-          # Create Android SDK directory structure
-          $androidSdkRoot = "C:\Android\sdk"
-          $cmdlineToolsPath = "$androidSdkRoot\cmdline-tools\latest"
-          
-          New-Item -Path $androidSdkRoot -ItemType Directory -Force
-          New-Item -Path "$androidSdkRoot\cmdline-tools" -ItemType Directory -Force
-          
-          # Download latest command-line tools
-          $cmdlineToolsUrl = "https://dl.google.com/android/repository/commandlinetools-win-11076708_latest.zip"
-          $zipPath = "$env:TEMP\cmdline-tools.zip"
-          
-          Invoke-WebRequest -Uri $cmdlineToolsUrl -OutFile $zipPath
-          
-          # Extract to correct location
-          Expand-Archive -Path $zipPath -DestinationPath "$env:TEMP\cmdline-tools-temp"
-          Move-Item -Path "$env:TEMP\cmdline-tools-temp\cmdline-tools\*" -Destination $cmdlineToolsPath -Force
-          
-          # Set environment variables
-          [System.Environment]::SetEnvironmentVariable('ANDROID_SDK_ROOT', $androidSdkRoot, 'Machine')
-          $env:ANDROID_SDK_ROOT = $androidSdkRoot
-          $env:PATH += ";$cmdlineToolsPath\bin;$androidSdkRoot\platform-tools"
-          
-          # Update PATH permanently
-          $newPath = [System.Environment]::GetEnvironmentVariable('PATH', 'Machine') + ";$cmdlineToolsPath\bin;$androidSdkRoot\platform-tools"
-          [System.Environment]::SetEnvironmentVariable('PATH', $newPath, 'Machine')
-          
-          Remove-Item $zipPath -Force
-          Remove-Item "$env:TEMP\cmdline-tools-temp" -Recurse -Force
-
-      - name: Install Android 15 (API Level 35) and Tools
-        run: |
-          # Accept licenses first
-          $licenseDir = "$env:ANDROID_SDK_ROOT\licenses"
-          New-Item -Path $licenseDir -ItemType Directory -Force
-          
-          # Accept all necessary licenses
-          @(
-            "android-sdk-license",
-            "android-sdk-preview-license",
-            "google-gdk-license",
-            "intel-android-extra-license",
-            "mips-android-sysimage-license",
-            "android-sdk-arm-dbt-license",
-            "android-sdk-35-license"
-          ) | ForEach-Object {
-            $licenseFile = "$licenseDir\$_.txt"
-            if (-not (Test-Path $licenseFile)) {
-              Set-Content -Path $licenseFile -Value "24333f8a63b6825ea9c5514f83c2829b004d1fee"
-            }
-          }
-          
-          # Install Android 15 platform and tools
-          sdkmanager "platforms;android-35" "platform-tools" "emulator" "system-images;android-35;google_apis;x86_64" "build-tools;35.0.0" --install --verbose [[10]]
-
-      - name: Create Android AVD for Android 15
-        run: |
-          # Create AVD configuration
-          $avdName = "Android15_Google"
-          $avdConfig = @"
-          avd.ini.encoding=ISO-8859-1
-          PlayStore.enabled=false
-          abi.type=x86_64
-          avd.id=$avdName
-          avd.name=$avdName
-          disk.dataPartition.size=4096M
-          fastboot.forceColdBoot=no
-          fastboot.forceFastBoot=yes
-          hw.accelerometer=yes
-          hw.audioInput=yes
-          hw.battery=yes
-          hw.camera.back=virtualscene
-          hw.camera.front=emulated
-          hw.cpu.arch=x86_64
-          hw.cpu.ncore=4
-          hw.dPad=no
-          hw.device.hash2=MD5:694051186a466c41c5c3e6d1e4e5a316
-          hw.device.manufacturer=Google
-          hw.device.name=pixel_6
-          hw.gps=yes
-          hw.gpu.enabled=yes
-          hw.gpu.mode=auto
-          hw.initialOrientation=Portrait
-          hw.keyboard=yes
-          hw.lcd.density=440
-          hw.lcd.height=2400
-          hw.lcd.width=1080
-          hw.mainKeys=no
-          hw.ramSize=4096
-          hw.sdCard=yes
-          hw.sensors.orientation=yes
-          hw.sensors.proximity=yes
-          hw.trackBall=no
-          image.sysdir.1=system-images/android-35/google_apis/x86_64/
-          runtime.network.latency=none
-          runtime.network.speed=full
-          sdcard.size=2048M
-          showDeviceFrame=yes
-          skin.dynamic=yes
-          skin.name=pixel_6
-          skin.path=skins/pixel_6
-          tag.display=Google APIs
-          tag.id=google_apis
-          vm.heapSize=1024
-"@
-          
-          $avdPath = "$env:USERPROFILE\.android\avd\$avdName.avd"
-          $iniPath = "$env:USERPROFILE\.android\avd\$avdName.ini"
-          
-          New-Item -Path $avdPath -ItemType Directory -Force
-          Set-Content -Path "$avdPath\config.ini" -Value $avdConfig
-          
-          # Create .ini file
-          $iniContent = @"
-          avd.ini.encoding=ISO-8859-1
-          path=$avdPath
-          path.rel=avd/$avdName.avd
-"@
-          Set-Content -Path $iniPath -Value $iniContent
-
-      - name: Download and Install Parsec
-        run: |
-          # Download Parsec installer
-          $parsecUrl = "https://builds.parsecgaming.com/parsec-windows.exe"
-          $installerPath = "$env:TEMP\parsec-installer.exe"
-          
-          Invoke-WebRequest -Uri $parsecUrl -OutFile $installerPath
-          
-          # Install Parsec silently [[31]]
-          Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait -NoNewWindow
-          
-          # Verify installation
-          $parsecInstallPath = "${env:ProgramFiles}\Parsec\parsecd.exe"
-          if (-not (Test-Path $parsecInstallPath)) {
-              Write-Error "Parsec installation failed"
-              exit 1
-          }
-          
-          Remove-Item $installerPath -Force
-
-      - name: Configure Parsec Auto-Login
-        run: |
-          # Create Parsec configuration directory
-          $parsecConfigDir = "$env:APPDATA\Parsec"
-          New-Item -Path $parsecConfigDir -ItemType Directory -Force
-          
-          # Create config file with credentials from secrets
-          $configContent = @"
-          {
-            "user": {
-              "email": "${{ secrets.PARSEC_EMAIL }}",
-              "password": "${{ secrets.PARSEC_PASSWORD }}"
-            },
-            "client": {
-              "auto_connect": true,
-              "start_minimized": false,
-              "start_with_windows": false
-            }
-          }
-"@
-          
-          Set-Content -Path "$parsecConfigDir\client.json" -Value $configContent
 
       - name: Start Android Emulator with GUI
         run: |
-          # Launch Android emulator in the background
+          # Start emulator in separate process with GUI
+          $avdName = "Android15-GUI"
           $emulatorPath = "$env:ANDROID_SDK_ROOT\emulator\emulator.exe"
-          $avdName = "Android15_Google"
           
-          Start-Process -FilePath $emulatorPath -ArgumentList "-avd $avdName -gpu host -no-audio -no-boot-anim -memory 4096" -NoNewWindow
+          # Start emulator with GUI enabled
+          Start-Process -FilePath $emulatorPath -ArgumentList "-avd $avdName -no-snapshot-load -gpu swiftshader_indirect -no-audio -wipe-data" -NoNewWindow
           
-          # Wait for emulator to start
-          Write-Host "Waiting for Android emulator to start..."
-          Start-Sleep -Seconds 30
+          # Wait for emulator to boot
+          Write-Host "Waiting for Android emulator to boot..."
+          Start-Sleep -Seconds 60
 
       - name: Start Parsec Service
         run: |
-          # Start Parsec daemon
-          $parsecPath = "${env:ProgramFiles}\Parsec\parsecd.exe"
-          Start-Process -FilePath $parsecPath -ArgumentList "--config-dir ""$env:APPDATA\Parsec""" -NoNewWindow
+          # Start Parsec service
+          $parsecService = "${env:ProgramFiles}\Parsec\parsecd.exe"
+          Start-Process -FilePath $parsecService -NoNewWindow -PassThru
           
-          Write-Host "Parsec service started successfully"
+          Write-Host "Parsec service started"
+          Start-Sleep -Seconds 10
 
-      - name: Verify Connection and Display Information
+      - name: Display Connection Information
         run: |
-          Write-Host "`n=== REMOTE ACCESS INFORMATION ==="
+          Write-Host "=========================================="
+          Write-Host "ANDROID 15 ENVIRONMENT READY FOR REMOTE ACCESS"
+          Write-Host "=========================================="
           Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-          Write-Host "RDP Username: AndroidUser"
-          Write-Host "RDP Password: $(echo $env:RDP_CREDS)"
-          Write-Host "Parsec Status: Service started"
-          Write-Host "Android Emulator: Running (Android 15)"
-          Write-Host "===============================`n"
+          Write-Host "Environment: Android 15 (API 35)"
+          Write-Host "Emulator: Pixel 6 with Google APIs"
+          Write-Host ""
+          Write-Host "TO CONNECT REMOTELY:"
+          Write-Host "1. Install Parsec app on your Android phone"
+          Write-Host "2. Open Parsec app and sign in with your Parsec account"
+          Write-Host "3. Connect to host with Tailscale IP: $env:TAILSCALE_IP"
+          Write-Host ""
+          Write-Host "NOTE: The environment will remain active for up to 60 minutes"
+          Write-Host "or until you cancel this workflow manually."
+          Write-Host "=========================================="
+
+      - name: Keep Session Alive
+        run: |
+          Write-Host "Maintaining active session for remote access..."
+          Write-Host "Press Ctrl+C in GitHub Actions to terminate this workflow early"
           
-          # Keep the runner active
+          # Keep the session alive by periodically checking emulator and Parsec status
           while ($true) {
-              Write-Host "[$(Get-Date)] Session active - Android 15 environment ready for remote control"
-              Start-Sleep -Seconds 300
+            # Check if emulator is still running
+            $emulatorProcess = Get-Process -Name "emulator*" -ErrorAction SilentlyContinue
+            if (-not $emulatorProcess) {
+              Write-Warning "Android emulator stopped. Attempting to restart..."
+              $avdName = "Android15-GUI"
+              $emulatorPath = "$env:ANDROID_SDK_ROOT\emulator\emulator.exe"
+              Start-Process -FilePath $emulatorPath -ArgumentList "-avd $avdName -gpu swiftshader_indirect -no-audio" -NoNewWindow
+              Start-Sleep -Seconds 30
+            }
+            
+            # Check if Parsec is still running
+            $parsecProcess = Get-Process -Name "parsecd" -ErrorAction SilentlyContinue
+            if (-not $parsecProcess) {
+              Write-Warning "Parsec service stopped. Restarting..."
+              $parsecService = "${env:ProgramFiles}\Parsec\parsecd.exe"
+              Start-Process -FilePath $parsecService -NoNewWindow -PassThru
+              Start-Sleep -Seconds 10
+            }
+            
+            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Session active - Environment running"
+            Start-Sleep -Seconds 60
           }
+        timeout-minutes: 3590  # Just under the job timeout to allow for cleanup
