@@ -14,23 +14,10 @@ jobs:
           Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -All -NoRestart
           Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -All -NoRestart
 
-      - name: Setup Android SDK and Create AVD for Android 15
+      - name: Install Android Studio
         shell: powershell
         run: |
-          $sdkRoot = "C:\Android"
-          $env:ANDROID_SDK_ROOT = $sdkRoot
-          New-Item -ItemType Directory -Force -Path $sdkRoot
-          $cmdToolsUrl = "https://dl.google.com/android/repository/commandlinetools-win-11076708_latest.zip"
-          $zipPath = "$env:TEMP\cmdline-tools.zip"
-          Invoke-WebRequest -Uri $cmdToolsUrl -OutFile $zipPath
-          Expand-Archive $zipPath -DestinationPath $sdkRoot
-          Rename-Item "$sdkRoot\cmdline-tools" "$sdkRoot\cmdline-tools\latest"
-          Remove-Item $zipPath
-          $env:PATH += ";$sdkRoot\cmdline-tools\latest\bin;$sdkRoot\emulator;$sdkRoot\platform-tools"
-          sdkmanager.bat --update
-          echo y | sdkmanager.bat --licenses
-          sdkmanager.bat "platform-tools" "platforms;android-35" "emulator" "system-images;android-35;google_apis;x86_64"
-          avdmanager create avd -n android15 -k "system-images;android-35;google_apis;x86_64" -d pixel_6 -f
+          winget install --id Google.AndroidStudio --source winget --silent --accept-package-agreements --accept-source-agreements --force
 
       - name: Install DeepLink PC Version
         shell: powershell
@@ -120,14 +107,14 @@ jobs:
           Write-Host "Password: $($creds[1].Trim())"
           Write-Host "=================="
           Write-Host "=== ANDROID & DEEPLINK SETUP ==="
-          Write-Host "Android SDK installed at C:\Android"
-          Write-Host "AVD 'android15' (Android 15, Pixel 6) ready."
-          Write-Host "Launch emulator via RDP: & `"C:\Android\emulator\emulator.exe`" -avd android15 -gpu host"
-          Write-Host "DeepLink installed. Via RDP, search 'DeepLink' in Start Menu and run it."
-          Write-Host "In DeepLink, note Device ID and click eye icon to reveal Password."
-          Write-Host "Use ID/Password in DeepLink Android app on your phone to connect/control."
+          Write-Host "Android Studio installed. Via RDP:"
+          Write-Host "1. Launch Android Studio from Start Menu (first run: accept licenses, download SDK if prompted)."
+          Write-Host "2. In Studio: Tools > AVD Manager > Create Virtual Device > Select Pixel 6 > Download Android 15 (API 35, Google APIs x86_64) > Finish."
+          Write-Host "3. Launch AVD from AVD Manager for full GUI Android 15 env (install/test apps/games)."
+          Write-Host "DeepLink installed. Launch from Start Menu, note Device ID, click eye icon to reveal Password."
+          Write-Host "Use ID/Password in DeepLink app on your phone to connect/control PC (including Android Studio/emulator)."
           Write-Host "==============================="
           while ($true) {
-              Write-Host "[$(Get-Date)] Session Active - RDP in to launch emulator & DeepLink. Ctrl+C to terminate."
+              Write-Host "[$(Get-Date)] Session Active - RDP in to setup/launch Android Studio & AVD, run DeepLink. Ctrl+C to terminate."
               Start-Sleep -Seconds 300
           }
