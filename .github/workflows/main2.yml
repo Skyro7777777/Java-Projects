@@ -1,55 +1,70 @@
-name: Android-AVD (API>=33) + DeepLink GUI
+name: Android AVD (API>=33) + DeepLink (Windows) GUI
 
 on:
   workflow_dispatch:
+    inputs:
+      android_api:
+        description: 'Android API level (33=Android13, 34=Android14, 35=Android15)'
+        required: false
+        default: '33'
 
 jobs:
-  android-deeplink-gui:
+  setup-avd-deeplink:
     runs-on: windows-latest
-    timeout-minutes: 3600
-
+    timeout-minutes: 360            # GitHub-hosted max common safe limit (6 hours)
     env:
-      # job-level environment (do NOT reference other env vars here)
       ANDROID_SDK_ROOT: C:\Android\Sdk
       ANDROID_CMDLINE_TOOLS: C:\Android\cmdline-tools
-      ANDROID_API: "33"             # change to 34 or 35 if you want Android 14/15 (must be >=33)
-      DEEPLINK_SETUP_URL: ${{ secrets.DEEPLINK_SETUP_URL }} # direct DeepLink installer URL stored in secrets
+      # DEEPLINK_SETUP_URL must be set as a repository secret (direct .exe/.msi link)
+      DEEPLINK_SETUP_URL: ${{ secrets.DEEPLINK_SETUP_URL }}
 
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Compute AVD_NAME and export it
+      - name: Determine Android API & AVD name
         shell: powershell
         run: |
-          $avd = "gh_avd_api_$($env:ANDROID_API)"
+          $api = "${{ github.event.inputs.android_api }}" 
+          if ([string]::IsNullOrWhiteSpace($api)) { $api = "33" }
+          # enforce minimum 33
+          if ([int]$api -lt 33) { Write-Error "ANDROID API must be >= 33"; exit 1 }
+          echo "ANDROID_API=$api" >> $env:GITHUB_ENV
+          $avd = "gh_avd_api_$api"
           echo "AVD_NAME=$avd" >> $env:GITHUB_ENV
-          Write-Host "AVD_NAME set to $avd"
+          Write-Host "Using Android API $api and AVD $avd"
 
-      - name: Enable RDP & basic firewall (so GUI session is accessible if needed)
+      - name: Enable Remote Desktop & allow RDP firewall (PowerShell-safe)
         shell: powershell
         run: |
+          # enable RDP
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
-          netsh advfirewall firewall delete rule name="RDP-GHActions" || $true
+          # safely remove any existing firewall rule (PowerShell try/catch)
+          try {
+            netsh advfirewall firewall delete rule name="RDP-GHActions"
+          } catch {
+            Write-Host "No existing RDP-GHActions rule or deletion failed - continuing."
+          }
+          # allow RDP inbound for testing
           netsh advfirewall firewall add rule name="RDP-GHActions" dir=in action=allow protocol=TCP localport=3389
 
-      - name: Create GUI user 'ghgui' (admin) and output creds to log
+      - name: Create GUI user (admin) and export credentials
         shell: powershell
         run: |
           $username = "ghgui"
-          $password = -join ((65..90) + (97..122) | Get-Random -Count 12 | ForEach-Object {[char]$_})
+          # 14-char secure-ish password
+          $password = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 14 | ForEach-Object {[char]$_})
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
           if (-not (Get-LocalUser -Name $username -ErrorAction SilentlyContinue)) {
             New-LocalUser -Name $username -Password $securePass -AccountNeverExpires -Description "GUI user for DeepLink session"
             Add-LocalGroupMember -Group "Administrators" -Member $username
             Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username
           }
-          Write-Host "GUI_USER=$username"
-          Write-Host "GUI_PASS=$password"
           echo "GUI_USER=$username" >> $env:GITHUB_ENV
           echo "GUI_PASS=$password" >> $env:GITHUB_ENV
+          Write-Host "Created/ensured GUI user $username"
 
       - name: Install OpenJDK (required for Android tools)
         shell: powershell
@@ -57,102 +72,164 @@ jobs:
           choco install -y openjdk11
           java -version
 
-      - name: Create Android SDK directories and download command-line tools
+      - name: Prepare Android commandline-tools
         shell: powershell
         run: |
-          New-Item -ItemType Directory -Force -Path $env:ANDROID_SDK_ROOT
-          New-Item -ItemType Directory -Force -Path $env:ANDROID_CMDLINE_TOOLS
-          $toolsZip = "$env:TEMP\commandlinetools.zip"
-          Invoke-WebRequest -Uri "https://dl.google.com/android/repository/commandlinetools-win-9477386_latest.zip" -OutFile $toolsZip -UseBasicParsing
-          Expand-Archive -Path $toolsZip -DestinationPath "$env:ANDROID_SDK_ROOT\cmdline-tools" -Force
+          New-Item -ItemType Directory -Force -Path $env:ANDROID_SDK_ROOT | Out-Null
+          New-Item -ItemType Directory -Force -Path $env:ANDROID_CMDLINE_TOOLS | Out-Null
+          $zip = "$env:TEMP\commandlinetools.zip"
+          Write-Host "Downloading Android command-line tools..."
+          Invoke-WebRequest -Uri "https://dl.google.com/android/repository/commandlinetools-win-9477386_latest.zip" -OutFile $zip -UseBasicParsing
+          Expand-Archive -LiteralPath $zip -DestinationPath "$env:ANDROID_SDK_ROOT\cmdline-tools" -Force
           if (-not (Test-Path "$env:ANDROID_SDK_ROOT\cmdline-tools\latest")) {
             Move-Item -Path "$env:ANDROID_SDK_ROOT\cmdline-tools\tools" -Destination "$env:ANDROID_SDK_ROOT\cmdline-tools\latest" -Force
           }
-          Remove-Item $toolsZip -Force
+          Remove-Item $zip -Force
           echo "ANDROID_SDK_ROOT=$env:ANDROID_SDK_ROOT" >> $env:GITHUB_ENV
 
-      - name: Add Android tools to PATH
+      - name: Add Android tools to PATH for this job
         shell: powershell
         run: |
           $new = "$env:ANDROID_SDK_ROOT\platform-tools;$env:ANDROID_SDK_ROOT\emulator;$env:ANDROID_SDK_ROOT\cmdline-tools\latest\bin"
           [Environment]::SetEnvironmentVariable("Path", $env:Path + ";" + $new, "Process")
-          Write-Host "PATH updated for this job."
+          Write-Host "Updated PATH for job."
 
-      - name: Install Android platform-tools, emulator, platform and system-image (API uses env variable)
+      - name: Install platform-tools, emulator, platform and system-image
         shell: powershell
         timeout-minutes: 30
         run: |
           $sdkRoot = $env:ANDROID_SDK_ROOT
           $api = $env:ANDROID_API
           $sdkmanager = "$sdkRoot\cmdline-tools\latest\bin\sdkmanager.bat"
-          & $sdkmanager --sdk_root=$sdkRoot "platform-tools" "emulator" "platforms;android-$api" "system-images;android-$api;google_apis;x86_64"
-          & $sdkmanager --sdk_root=$sdkRoot --licenses | ForEach-Object { $_ } 
+          Write-Host "Installing packages for API $api..."
+          & $sdkmanager --sdk_root="$sdkRoot" "platform-tools" "emulator" "platforms;android-$api" "system-images;android-$api;google_apis;x86_64"
+          # accept licenses non-interactively using cmd.exe echo Y|... (PowerShell-friendly)
+          cmd.exe /c "for /f \"delims=\" %i in ('echo Y ^| ""$sdkmanager"" --sdk_root=""$sdkRoot"" --licenses') do @echo %i"
 
-      - name: Create AVD (force recreate if exists)
+      - name: Create (or recreate) AVD
         shell: powershell
         run: |
           $sdkRoot = $env:ANDROID_SDK_ROOT
           $avdmanager = "$sdkRoot\cmdline-tools\latest\bin\avdmanager.bat"
           $api = $env:ANDROID_API
           $avdName = $env:AVD_NAME
-          & $avdmanager delete avd -n $avdName | Out-Null || $true
+          try {
+            & $avdmanager delete avd -n $avdName | Out-Null
+            Write-Host "Deleted existing AVD $avdName"
+          } catch {
+            Write-Host "No existing AVD to delete - continuing."
+          }
+          # Create AVD (force choose google_apis x86_64)
           echo no | & $avdmanager create avd -n $avdName -k "system-images;android-$api;google_apis;x86_64" --device "pixel" --force
 
-      - name: Start emulator (visible GUI; uses SwiftShader software GPU)
+      - name: Start emulator (GUI) and wait for boot
         shell: powershell
         run: |
           $sdkRoot = $env:ANDROID_SDK_ROOT
-          $emulatorExe = "$sdkRoot\emulator\emulator.exe"
+          $emulator = "$sdkRoot\emulator\emulator.exe"
           $avd = $env:AVD_NAME
-          Start-Process -FilePath $emulatorExe -ArgumentList "-avd",$avd,"-no-snapshot","-wipe-data","-gpu","swiftshader_indirect" -NoNewWindow
+          Write-Host "Starting emulator $avd (software GPU)..."
+          Start-Process -FilePath $emulator -ArgumentList "-avd",$avd,"-no-snapshot","-wipe-data","-gpu","swiftshader_indirect" -NoNewWindow
           $adb = "$sdkRoot\platform-tools\adb.exe"
-          $maxWait = 600
-          $elapsed = 0
-          while ($elapsed -lt $maxWait) {
-            $devs = & $adb devices
-            if ($devs -match "emulator-") { break }
+          $max = 600
+          $i = 0
+          while ($i -lt $max) {
+            $out = & $adb devices
+            if ($out -match 'emulator-') { break }
             Start-Sleep -Seconds 2
-            $elapsed += 2
+            $i += 2
           }
-          if ($elapsed -ge $maxWait) { Write-Error "Emulator failed to start within timeout"; exit 1 }
-          $booted = $false
-          $elapsed = 0
-          while (-not $booted -and $elapsed -lt $maxWait) {
-            $result = (& $adb -s emulator-5554 shell getprop sys.boot_completed -n 1) 2>$null
-            if ($result.Trim() -eq "1") { $booted = $true; break }
+          if ($i -ge $max) { Write-Error "Emulator did not appear in time"; exit 1 }
+          # wait for Android boot
+          $i = 0
+          $boot = $false
+          while ($i -lt $max) {
+            $r = (& $adb -s emulator-5554 shell getprop sys.boot_completed -n 1) 2>$null
+            if ($r.Trim() -eq '1') { $boot = $true; break }
             Start-Sleep -Seconds 2
-            $elapsed += 2
+            $i += 2
           }
-          if (-not $booted) { Write-Error "Emulator didn't finish booting in time"; exit 1 }
+          if (-not $boot) { Write-Error "Emulator did not finish booting"; exit 1 }
           & $adb devices
           echo "EMULATOR_READY=true" >> $env:GITHUB_ENV
+          Write-Host "Emulator is ready."
 
-      - name: Download & Install DeepLink (Windows) — requires DEEPLINK_SETUP_URL secret
+      - name: (Optional) Install an APK into emulator (example)
+        if: env.EMULATOR_READY == 'true'
+        shell: powershell
+        run: |
+          $adb = "$env:ANDROID_SDK_ROOT\platform-tools\adb.exe"
+          if (Test-Path ".\sample.apk") {
+            & $adb install -r .\sample.apk
+            Write-Host "Installed sample.apk"
+          } else {
+            Write-Host "No sample.apk found - skipping."
+          }
+
+      - name: Download and install DeepLink (Windows) — requires DEEPLINK_SETUP_URL secret
         shell: powershell
         env:
           DL_URL: ${{ env.DEEPLINK_SETUP_URL }}
         run: |
           if ([string]::IsNullOrEmpty($env:DL_URL)) {
-            Write-Error "DEEPLINK_SETUP_URL is empty. Please add a repository secret 'DEEPLINK_SETUP_URL' with the direct DeepLink installer URL (EXE or MSI)."
+            Write-Error "DEEPLINK_SETUP_URL is empty. Add a repository secret with the direct DeepLink installer (.exe or .msi) URL."
             exit 1
           }
-          $out = "$env:TEMP\deeplink_setup.exe"
+          $out = "$env:TEMP\deeplink_installer.exe"
+          Write-Host "Downloading DeepLink installer..."
           Invoke-WebRequest -Uri $env:DL_URL -OutFile $out -UseBasicParsing
-          Start-Process -FilePath $out -ArgumentList "/S" -Wait -NoNewWindow -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 8
-          Get-Process | Where-Object {$_.ProcessName -match "DeepLink"} | Select-Object ProcessName, Id | Write-Host
+          Write-Host "Attempt silent install (common flags) - if installer is interactive, you'll need to run it from runner desktop."
+          try {
+            Start-Process -FilePath $out -ArgumentList "/S" -Wait -NoNewWindow -ErrorAction Stop
+            Write-Host "Attempted /S silent install"
+          } catch {
+            try { Start-Process -FilePath $out -ArgumentList "/quiet","/norestart" -Wait -NoNewWindow -ErrorAction Stop; Write-Host "Attempted /quiet install" } catch { Write-Host "Silent install likely not supported. Installer was downloaded to $out; start it from the runner desktop." }
+          }
+          # List processes to help troubleshooting
+          Get-Process | Where-Object {$_.ProcessName -match "DeepLink|deeplink"} | Select-Object ProcessName,Id | Write-Host
 
-      - name: Print connection & control instructions (final)
+      - name: Try to launch DeepLink GUI (standard locations) and show instructions
+        shell: powershell
+        run: |
+          $paths = @(
+            "$env:ProgramFiles\DeepLink\DeepLink.exe",
+            "$env:ProgramFiles(x86)\DeepLink\DeepLink.exe",
+            "$env:ProgramFiles\DeepLink\DeepLink_Setup.exe"
+          )
+          $started = $false
+          foreach ($p in $paths) {
+            if (Test-Path $p) {
+              Start-Process -FilePath $p
+              Write-Host "Started DeepLink from $p"
+              $started = $true
+              break
+            }
+          }
+          if (-not $started) {
+            Write-Host "DeepLink executable not found in standard paths. If the installer ran interactively, open the runner's desktop and start DeepLink manually."
+          }
+          Write-Host ""
+          Write-Host "DeepLink behavior per official docs: Windows installer present; run the Windows client on the runner to view Device ID and hidden password (click 'show password' to reveal). Then use the DeepLink mobile app (Play Store) to connect using Device ID + password." 
+          Write-Host ""
+          Write-Host "References: DeepLink software & Quick Start pages on deeplink.cloud."
+
+      - name: Final: print useful environment details and keep runner alive for interactive GUI
         shell: powershell
         run: |
           Write-Host "=== READY ==="
-          Write-Host "AVD: $env:AVD_NAME (Android API $env:ANDROID_API)"
-          Write-Host "Emulator is booted: $env:EMULATOR_READY"
+          Write-Host "AVD_NAME: $env:AVD_NAME"
+          Write-Host "ANDROID_API: $env:ANDROID_API"
           Write-Host "GUI user: $env:GUI_USER"
-          Write-Host "GUI pass: $env:GUI_PASS"
+          Write-Host "GUI pass: (hidden in logs but available via env) $env:GUI_PASS"
           Write-Host ""
-          Write-Host "If DeepLink didn't auto-install, add repo secret DEEPLINK_SETUP_URL with a direct .exe/.msi link and re-run."
-          while ($true) {
-            Write-Host "$(Get-Date -Format 'u') - Interactive GUI job running. Cancel workflow to terminate."
+          Write-Host "Open the runner desktop (Actions -> job -> View run -> click the 'Open in browser' RDP if you have a mechanism, or use the job logs to launch DeepLink on the runner desktop)."
+          Write-Host ""
+          Write-Host "NOTE: Click 'show password' inside the DeepLink Windows client UI (it's hidden by default). Then connect from mobile app using Device ID + password."
+          Write-Host "=============="
+          # Keep job alive (until canceled or timeout)
+          $i = 0
+          while ($i -lt 720) {    # prints for up to 720*5s = 3600s (1 hour) — or you can rely on timeout-minutes
+            Write-Host "$(Get-Date -Format 'u') - Interactive job running. Cancel workflow to terminate."
             Start-Sleep -Seconds 300
+            $i++
           }
