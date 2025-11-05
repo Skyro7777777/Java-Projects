@@ -1,92 +1,98 @@
-name: Android15-Deeplink
+name: Android15-DeepLink-RDP
 
 on:
   workflow_dispatch:
 
 jobs:
-  android-deeplink:
+  setup-android-env:
     runs-on: windows-latest
     timeout-minutes: 3600
-
     steps:
-      - name: Setup JDK
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'zulu'
-          java-version: '17'
+      - name: Enable Hypervisor Platform for Emulator Acceleration
+        shell: powershell
+        run: |
+          Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -All -NoRestart
+          Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -All -NoRestart
+
+      - name: Setup Android SDK and Create AVD for Android 15
+        shell: powershell
+        run: |
+          $sdkRoot = "C:\Android"
+          $env:ANDROID_SDK_ROOT = $sdkRoot
+          New-Item -ItemType Directory -Force -Path $sdkRoot
+          $cmdToolsUrl = "https://dl.google.com/android/repository/commandlinetools-win-11076708_latest.zip"
+          $zipPath = "$env:TEMP\cmdline-tools.zip"
+          Invoke-WebRequest -Uri $cmdToolsUrl -OutFile $zipPath
+          Expand-Archive $zipPath -DestinationPath $sdkRoot
+          Rename-Item "$sdkRoot\cmdline-tools" "$sdkRoot\cmdline-tools\latest"
+          Remove-Item $zipPath
+          $env:PATH += ";$sdkRoot\cmdline-tools\latest\bin;$sdkRoot\emulator;$sdkRoot\platform-tools"
+          sdkmanager.bat --update
+          echo y | sdkmanager.bat --licenses
+          sdkmanager.bat "platform-tools" "platforms;android-35" "emulator" "system-images;android-35;google_apis;x86_64"
+          avdmanager create avd -n android15 -k "system-images;android-35;google_apis;x86_64" -d pixel_6 -f
+
+      - name: Install DeepLink PC Version
+        shell: powershell
+        run: |
+          $setupPath = "$env:TEMP\DeeplinkSetup.exe"
+          Invoke-WebRequest -Uri "https://static1.deeplink.cloud/DeeplinkSetup.exe" -OutFile $setupPath
+          Start-Process -FilePath $setupPath -ArgumentList "/S" -Wait
+          Remove-Item $setupPath
 
       - name: Configure Core RDP Settings
+        shell: powershell
         run: |
-          # Enable Remote Desktop and disable Network Level Authentication (if needed)
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                           -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                           -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                           -Name "SecurityLayer" -Value 0 -Force
-
-          # Remove any existing rule with the same name to avoid duplication
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
-
-          # For testing, allow any incoming connection on port 3389
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389
-
-          # (Optional) Restart the Remote Desktop service to ensure changes take effect
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+          netsh advfirewall firewall delete rule name="RDP-Tailscale" 2>$null
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
           Restart-Service -Name TermService -Force
 
       - name: Create RDP User with Secure Password
+        shell: powershell
         run: |
           Add-Type -AssemblyName System.Security
           $charSet = @{
-              Upper   = 65..90 | ForEach-Object { [char]$_ }  # A-Z
-              Lower   = 97..122 | ForEach-Object { [char]$_ } # a-z
-              Number  = 48..57 | ForEach-Object { [char]$_ }  # 0-9
-              Special = 33,35,36,37,42,43,44,46,47,64,91,92,93,94,95,123,124,125,126 | ForEach-Object { [char]$_ } # Special characters
+              Upper   = 65..90
+              Lower   = 97..122
+              Number  = 48..57
+              Special = 33,35,36,37,42,43,44,45,46,47,64,91,92,93,94,95,96,123,124,125,126
           }
           $rawPassword = @()
-          $rawPassword += $charSet.Upper | Get-Random -Count 4
-          $rawPassword += $charSet.Lower | Get-Random -Count 4
-          $rawPassword += $charSet.Number | Get-Random -Count 4
-          $rawPassword += $charSet.Special | Get-Random -Count 4
+          $rawPassword += Get-Random -InputObject $charSet.Upper -Count 4
+          $rawPassword += Get-Random -InputObject $charSet.Lower -Count 4
+          $rawPassword += Get-Random -InputObject $charSet.Number -Count 4
+          $rawPassword += Get-Random -InputObject $charSet.Special -Count 4
           $password = -join ($rawPassword | Sort-Object { Get-Random })
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
           New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-
-          echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
+          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
           if (-not (Get-LocalUser -Name "RDP")) {
               Write-Error "User creation failed"
               exit 1
           }
 
       - name: Install Tailscale
+        shell: powershell
         run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
-
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
+          winget install --id Tailscale.Tailscale --source winget --silent --accept-package-agreements --accept-source-agreements --force
 
       - name: Establish Tailscale Connection
+        shell: powershell
         run: |
-          # Bring up Tailscale with the provided auth key and set a unique hostname
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-
-          # Wait for Tailscale to assign an IP
+          $tsExe = "C:\Program Files\Tailscale\tailscale.exe"
+          & $tsExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
           $tsIP = $null
           $retries = 0
           while (-not $tsIP -and $retries -lt 10) {
-              $output = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              $tsIP = ($output | Where-Object { $_ -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$' } | Select-Object -First 1).Trim()
-              if (-not $tsIP) {
-                  Start-Sleep -Seconds 5
-                  $retries++
-              }
+              $tsIP = & $tsExe ip -4
+              Start-Sleep -Seconds 5
+              $retries++
           }
-
           if (-not $tsIP) {
               Write-Error "Tailscale IP not assigned. Exiting."
               exit 1
@@ -94,10 +100,9 @@ jobs:
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
       - name: Verify RDP Accessibility
+        shell: powershell
         run: |
           Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-
-          # Test connectivity using Test-NetConnection against the Tailscale IP on port 3389
           $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
           if (-not $testResult.TcpTestSucceeded) {
               Write-Error "TCP connection to RDP port 3389 failed"
@@ -105,92 +110,24 @@ jobs:
           }
           Write-Host "TCP connectivity successful!"
 
-      - name: Install Android SDK and Emulator (Android 15)
-        run: |
-          # Download command line tools (latest as of Nov 2025)
-          $cmdlineUrl = "https://dl.google.com/android/repository/commandlinetools-win-12216305_latest.zip"
-          Invoke-WebRequest -Uri $cmdlineUrl -OutFile "$env:TEMP\cmdline-tools.zip"
-          Expand-Archive "$env:TEMP\cmdline-tools.zip" "$env:TEMP\cmdline"
-          $ANDROID_HOME = "$env:TEMP\android-sdk"
-          New-Item -ItemType Directory -Path $ANDROID_HOME -Force | Out-Null
-          Move-Item "$env:TEMP\cmdline\cmdline-tools" "$ANDROID_HOME\cmdline-tools\latest" -Force
-
-          # Set ANDROID_HOME and update PATH
-          [System.Environment]::SetEnvironmentVariable("ANDROID_HOME", $ANDROID_HOME, [System.EnvironmentVariableTarget]::Process)
-          $env:ANDROID_HOME = $ANDROID_HOME
-          $newPath = "$env:PATH;$ANDROID_HOME\platform-tools;$ANDROID_HOME\emulator;$ANDROID_HOME\cmdline-tools\latest\bin"
-          [System.Environment]::SetEnvironmentVariable("PATH", $newPath, [System.EnvironmentVariableTarget]::Process)
-          $env:PATH = $newPath
-
-          # Accept licenses
-          yes | sdkmanager.bat --licenses
-
-          # Install required packages for Android 15 (API 35)
-          sdkmanager.bat "platform-tools" "platforms;android-35" "emulator" "system-images;android-35;google_apis_playstore;x86_64"
-
-          # Create AVD (Pixel 7 for Android 15)
-          echo "no" | avdmanager create avd -n Android15 -k "system-images;android-35;google_apis_playstore;x86_64" -d pixel_7
-
-          # Start emulator in GUI mode (desktop session active via RDP)
-          Start-Process -FilePath "$ANDROID_HOME\emulator\emulator.exe" -ArgumentList "-avd Android15 -gpu host -no-snapshot" -NoNewWindow
-
-          # Wait for device boot
-          & "$ANDROID_HOME\platform-tools\adb.exe" wait-for-device
-          $bootCheck = 0
-          while ($bootCheck -ne 1 -and $bootCheck -lt 60) {
-              $bootStatus = & "$ANDROID_HOME\platform-tools\adb.exe" shell getprop sys.boot_completed 2>$null
-              if ($bootStatus -eq "1") { $bootCheck = 1; break }
-              Start-Sleep -Seconds 10
-              $bootCheck++
-          }
-          if ($bootCheck -eq 1) {
-              Write-Host "Android 15 emulator booted successfully."
-          } else {
-              Write-Error "Emulator boot timeout."
-              exit 1
-          }
-
-      - name: Install and Start Deeplink
-        run: |
-          # Download and install Deeplink silently
-          Invoke-WebRequest -Uri "https://static1.deeplink.cloud/DeeplinkSetup.exe" -OutFile "$env:TEMP\DeeplinkSetup.exe"
-          Start-Process "$env:TEMP\DeeplinkSetup.exe" -ArgumentList "/S" -Wait -NoNewWindow
-          Remove-Item "$env:TEMP\DeeplinkSetup.exe" -Force
-
-          # Wait for install, then start Deeplink (default path)
-          Start-Sleep -Seconds 5
-          $deeplinkPath = "${env:ProgramFiles}\Deeplink\Deeplink.exe"
-          if (Test-Path $deeplinkPath) {
-              Start-Process $deeplinkPath -NoNewWindow
-              Start-Sleep -Seconds 10  # Allow startup and device registration
-              Write-Host "Deeplink installed and started."
-          } else {
-              # Fallback search in common paths
-              $deeplinkAlt = Get-ChildItem -Path $env:ProgramFiles, "${env:ProgramFiles(x86)}" -Recurse -Name "Deeplink.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-              if ($deeplinkAlt) {
-                  $deeplinkPath = Join-Path (Split-Path $deeplinkAlt.FullName -Parent) "Deeplink.exe"
-                  Start-Process $deeplinkPath -NoNewWindow
-                  Write-Host "Deeplink started from alternate path: $deeplinkPath"
-              } else {
-                  Write-Error "Deeplink not found after install."
-                  exit 1
-              }
-          }
-
       - name: Maintain Connection
+        shell: powershell
         run: |
-          Write-Host "=== ACCESS INFO ==="
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-          Write-Host "RDP Username: RDP"
-          Write-Host "RDP Password: $env:RDP_PASSWORD"
-          Write-Host ""
-          Write-Host "Android 15 Emulator: Running with GUI (Pixel 7 device, API 35)."
-          Write-Host "Deeplink: Installed/running on PC. RDP in to view GUI, find Deeplink window, click eye icon right of hidden password to reveal it."
-          Write-Host "Pair via Device ID & revealed Password in Deeplink mobile app for remote control (emulator/apps/games)."
+          $creds = $env:RDP_CREDS.Split('|')
+          Write-Host "=== RDP ACCESS ==="
+          Write-Host "Address: $env:TAILSCALE_IP"
+          Write-Host "Username: $($creds[0].Split(':')[1].Trim())"
+          Write-Host "Password: $($creds[1].Trim())"
           Write-Host "=================="
-
-          # Keep runner active indefinitely (or until manually cancelled)
+          Write-Host "=== ANDROID & DEEPLINK SETUP ==="
+          Write-Host "Android SDK installed at C:\Android"
+          Write-Host "AVD 'android15' (Android 15, Pixel 6) ready."
+          Write-Host "Launch emulator via RDP: & `"C:\Android\emulator\emulator.exe`" -avd android15 -gpu host"
+          Write-Host "DeepLink installed. Via RDP, search 'DeepLink' in Start Menu and run it."
+          Write-Host "In DeepLink, note Device ID and click eye icon to reveal Password."
+          Write-Host "Use ID/Password in DeepLink Android app on your phone to connect/control."
+          Write-Host "==============================="
           while ($true) {
-              Write-Host "[$(Get-Date)] Session Active - RDP/Deeplink control available. Ctrl+C to terminate."
+              Write-Host "[$(Get-Date)] Session Active - RDP in to launch emulator & DeepLink. Ctrl+C to terminate."
               Start-Sleep -Seconds 300
           }
