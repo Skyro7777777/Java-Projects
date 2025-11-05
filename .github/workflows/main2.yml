@@ -80,10 +80,11 @@ jobs:
           $retries = 0
           while (-not $tsIP -and $retries -lt 10) {
               $output = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              $tsIP = $output[0].Trim()
-              if ($tsIP -and $tsIP -match '^\d+\.\d+\.\d+\.\d+$') { break }
-              Start-Sleep -Seconds 5
-              $retries++
+              $tsIP = ($output | Where-Object { $_ -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$' } | Select-Object -First 1).Trim()
+              if (-not $tsIP) {
+                  Start-Sleep -Seconds 5
+                  $retries++
+              }
           }
 
           if (-not $tsIP) {
