@@ -19,6 +19,8 @@ HOSTNAME=${HOSTNAME:-cloudshell-windows}
 clear
 echo "Installing Tailscale..."
 curl -fsSL https://tailscale.com/install.sh | sh
+sudo nohup tailscaled --state=mem: --tun=userspace-networking &>/dev/null &
+sleep 10
 sudo tailscale up --authkey=$KEY --hostname=$HOSTNAME --accept-routes --accept-dns=false
 sleep 5
 TSIP=$(sudo tailscale ip -4 | head -n1 | awk '{print $2}')
