@@ -11,7 +11,7 @@ NGROK_AUTHTOKEN="35FDJCQnJwU034cbrkiTYFjhkyi_41WoXx7RNveiAHwDmEhgv"
 : "${NGROK_AUTHTOKEN:=${NGROK_TOKEN:-}}"
 
 # Default ngrok region (change if you like): us, eu, ap, au, sa, jp, in
-NGROK_REGION="${NGROK_REGION:-eu}"
+NGROK_REGION="${NGROK_REGION:-IN}"
 # -------------------------
 
 # helper goto (kept from original script)
