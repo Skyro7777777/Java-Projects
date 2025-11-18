@@ -1,43 +1,93 @@
 #!/bin/bash
 
-function goto
-{
+function goto {
     label=$1
-    cd 
     cmd=$(sed -n "/^:[[:blank:]][[:blank:]]*${label}/{:a;n;p;ba};" $0 | 
           grep -v ':$')
     eval "$cmd"
     exit
 }
 
+cat > Dockerfile << 'EOF'
+FROM ubuntu:22.04
+
+RUN apt-get update && apt-get upgrade -y && \
+    apt-get install -y ca-certificates gnupg lsb-release && \
+    apt-get install -y ubuntu-desktop xserver-xorg-video-dummy lightdm wget sudo dbus && \
+    rm -rf /var/lib/apt/lists/*
+
+# Configure dummy display
+RUN mkdir -p /etc/X11/xorg.conf.d && \
+    echo 'Section "Device" Identifier "dummy" Driver "dummy" VideoRam 256000 EndSection Section "Screen" Identifier "Dummy Screen" Device "dummy" DefaultDepth 24 SubSection "Display" Depth 24 Virtual 1920 1080 EndSubSection EndSection' > /etc/X11/xorg.conf.d/10-dummy.conf
+
+# Install RustDesk
+RUN VERSION="1.4.3" && \
+    wget https://github.com/rustdesk/rustdesk/releases/download/v${VERSION}/rustdesk-${VERSION}-x86_64.deb && \
+    dpkg -i rustdesk-${VERSION}-x86_64.deb || apt-get install -f -y && \
+    rm rustdesk-${VERSION}-x86_64.deb
+
+# Enable headless
+RUN rustdesk --option allow-linux-headless Y
+
+# Create user
+RUN useradd -m -s /bin/bash -G sudo user && \
+    echo "user:123456" | chpasswd && \
+    echo "user ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# LightDM autologin
+RUN echo '[Seat:*] autologin-user=user autologin-user-timeout=0' > /etc/lightdm/lightdm.conf.d/autologin.conf
+
+# Enable lightdm
+RUN ln -sf /lib/systemd/system/lightdm.service /etc/systemd/system/display-manager.service
+
+CMD ["/lib/systemd/systemd"]
+EOF
+
+docker build -t rustdesk-ubuntu-gnome .
+
+docker run -d \
+  --privileged \
+  --network host \
+  --shm-size=1g \
+  --cap-add=SYS_PTRACE \
+  --tmpfs /tmp \
+  --tmpfs /run \
+  --tmpfs /run/lock \
+  -v /sys/fs/cgroup:/sys/fs/cgroup:ro \
+  --name rustdesk-vm \
+  rustdesk-ubuntu-gnome
+
+sleep 60
+
+docker exec rustdesk-vm systemctl daemon-reload
+docker exec rustdesk-vm systemctl enable lightdm
+docker exec rustdesk-vm systemctl start lightdm
+
+sleep 20
+
+docker exec rustdesk-vm rustdesk --password 123456
+
+ID=$(docker exec rustdesk-vm rustdesk --get-id)
+
 clear
-echo "Repo: Custom RustDesk Ubuntu Desktop"
+echo "RustDesk Information:"
+echo "ID: $ID"
+echo "Password: 123456"
 echo "======================="
-echo "Starting Ubuntu XFCE container with RustDesk..."
-docker run --rm -d --network host --privileged --name rustdesk-ubuntu --cap-add=SYS_PTRACE --shm-size=1g danchitnis/xrdp:ubuntu-xfce user 123456 no
-sleep 5  # Wait for container to start
-
-# Install RustDesk as root
-docker exec -u root rustdesk-ubuntu apt update -qq >/dev/null 2>&1
-docker exec -u root rustdesk-ubuntu apt install -y wget >/dev/null 2>&1
-docker exec -u root rustdesk-ubuntu wget -q https://github.com/rustdesk/rustdesk/releases/download/1.4.3/rustdesk-1.4.3-x86_64.deb
-docker exec -u root rustdesk-ubuntu dpkg -i rustdesk-1.4.3-x86_64.deb || docker exec -u root rustdesk-ubuntu apt install -f -y >/dev/null 2>&1
-docker exec -u root rustdesk-ubuntu rm rustdesk-1.4.3-x86_64.deb
-
-# Set permanent password and start service as user
-docker exec -u user rustdesk-ubuntu rustdesk --password 123456
-docker exec -u user rustdesk-ubuntu rustdesk --service &
-
-sleep 5  # Wait for service to start
-
-clear
 echo "Download RustDesk client: https://rustdesk.com/download"
+echo "Enter ID and password to connect."
 echo "======================="
-echo Done! RustDesk Information:
-echo ID:
-docker exec -u user rustdesk-ubuntu rustdesk --get-id
-echo Password: 123456
-echo "Enter ID and Password in your RustDesk app to connect."
-echo "Works from any country via relay servers."
 echo "VM can't connect? Restart Cloud Shell then Re-run script."
-seq 1 43200 | while read i; do echo -en "\r Running .     $i s /43200 s";sleep 0.1;echo -en "\r Running ..    $i s /43200 s";sleep 0.1;echo -en "\r Running ...   $i s /43200 s";sleep 0.1;echo -en "\r Running ....  $i s /43200 s";sleep 0.1;echo -en "\r Running ..... $i s /43200 s";sleep 0.1;echo -en "\r Running     . $i s /43200 s";sleep 0.1;echo -en "\r Running  .... $i s /43200 s";sleep 0.1;echo -en "\r Running   ... $i s /43200 s";sleep 0.1;echo -en "\r Running    .. $i s /43200 s";sleep 0.1;echo -en "\r Running     . $i s /43200 s";sleep 0.1; done
+
+seq 1 43200 | while read i; do 
+  echo -en "\r Running .     $i s /43200 s"; sleep 0.1
+  echo -en "\r Running ..    $i s /43200 s"; sleep 0.1
+  echo -en "\r Running ...   $i s /43200 s"; sleep 0.1
+  echo -en "\r Running ....  $i s /43200 s"; sleep 0.1
+  echo -en "\r Running ..... $i s /43200 s"; sleep 0.1
+  echo -en "\r Running     . $i s /43200 s"; sleep 0.1
+  echo -en "\r Running  .... $i s /43200 s"; sleep 0.1
+  echo -en "\r Running   ... $i s /43200 s"; sleep 0.1
+  echo -en "\r Running    .. $i s /43200 s"; sleep 0.1
+  echo -en "\r Running     . $i s /43200 s"; sleep 0.1
+done
