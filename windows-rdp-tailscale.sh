@@ -1,107 +1,77 @@
 #!/bin/bash
-# Windows-like RDP Setup for Google Cloud Shell
-# This script creates a temporary Windows-like desktop environment using RDP
-# Save to: https://raw.githubusercontent.com/Skyro7777777/Java-Projects/main/windows-rdp-tailscale.sh
 
-wget -O ng.sh https://github.com/kmille36/Docker-Ubuntu-Desktop-NoMachine/raw/main/ngrok.sh > /dev/null 2>&1
-chmod +x ng.sh
-./ng.sh
+# Download ngrok
+wget -q -O ngrok.tgz https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
+tar xzf ngrok.tgz
+chmod +x ngrok
 
-function goto {
-    label=$1
-    cd 
-    cmd=$(sed -n "/^:[[:blank:]][[:blank:]]*${label}/{:a;n;p;ba};" $0 | 
-          grep -v ':$')
-    eval "$cmd"
-    exit
-}
-
-: ngrok
 clear
+echo "RustDesk Windows-like RDP Setup"
+echo "================================="
 echo "Go to: https://dashboard.ngrok.com/get-started/your-authtoken"
 read -p "Paste Ngrok Authtoken: " CRP
-./ngrok config add-authtoken $CRP 
-clear
-echo "Setting up Windows-like Desktop Environment"
-echo "======================="
-echo "Choose ngrok region (for better connection):"
-echo "US - United States (Ohio)"
-echo "EU - Europe (Frankfurt)"
-echo "AP - Asia/Pacific (Singapore)"
-echo "AU - Australia (Sydney)"
-echo "SA - South America (Sao Paulo)"
-echo "JP - Japan (Tokyo)"
-echo "IN - India (Mumbai)"
-read -p "Choose ngrok region: " CRP
-./ngrok tcp --region $CRP 3389 &>/dev/null &
-sleep 1
-if curl --silent --show-error http://127.0.0.1:4040/api/tunnels > /dev/null 2>&1; then 
-    echo "✓ Ngrok tunnel established successfully!"
-else 
-    echo "✗ Ngrok Error! Please try again!" && sleep 1 && goto ngrok
-fi
+./ngrok config add-authtoken $CRP
 
 clear
-echo "🚀 Starting Windows-like Desktop Environment..."
-echo "This may take 1-2 minutes to initialize..."
+echo "Choose ngrok region:"
+echo "us, eu, ap, au, sa, jp, in"
+read -p "Region: " REGION
 
-# Use a proven Ubuntu desktop with RDP setup
-docker run --rm -d \
-    --name windows-desktop \
-    -p 3389:3389 \
-    -e USER=user \
-    -e PASSWORD=RandomItIs@12345 \
-    -e TZ=America/New_York \
-    --cap-add=SYS_PTRACE \
+# Start ngrok for RustDesk
+./ngrok tcp --region $REGION 21116 &>/dev/null &
+sleep 3
+
+# Wait for ngrok to be ready
+until curl -s http://127.0.0.1:4040/api/tunnels > /dev/null; do
+    sleep 1
+done
+
+# Get RustDesk connection info
+RUSTDESK_INFO=$(curl -s http://127.0.0.1:4040/api/tunnels | grep -o 'tcp://[^"]*')
+RUSTDESK_ADDR=$(echo $RUSTDESK_INFO | sed 's/tcp:\/\///')
+
+echo "Starting RustDesk server..."
+
+# Run Docker container with desktop and RustDesk
+docker run -d \
+    --name windows-rdp \
+    --privileged \
     --shm-size=1g \
-    accetto/ubuntu-vnc-xfce-g3:latest
-
-# Wait for the desktop environment to start
-echo "⏳ Waiting for desktop to initialize..."
-sleep 60
+    -p 21115:21115 \
+    -p 21116:21116 \
+    -p 21116:21116/udp \
+    -p 21117:21117 \
+    -p 21118:21118 \
+    -p 21119:21119 \
+    -e RUSTDESK_PASSWORD="RandomItIs@12345" \
+    -e AUDIO_GID=$(getent group audio | cut -d: -f3) \
+    -e VIDEO_GID=$(getent group video | cut -d: -f3) \
+    --restart unless-stopped \
+    rustdesk/rustdesk-server:latest
 
 clear
-echo "✅ Windows-like Desktop Environment Ready!"
-echo "=========================================="
+echo "✅ Setup Complete!"
+echo "=================="
+echo "📡 RustDesk Server: $RUSTDESK_ADDR"
+echo "🔑 Password: RandomItIs@12345"
 echo ""
-echo "🔗 Connection Details:"
-echo "──────────────────────────────────────────"
-echo "RDP Address: $(curl --silent --show-error http://127.0.0.1:4040/api/tunnels | sed -nE 's/.*public_url":"tcp:..([^"]*).*/\1/p' | sed 's/:3389//')"
-echo "Port: 3389"
-echo "Username: user"
-echo "Password: RandomItIs@12345"
+echo "📥 Download RustDesk: https://rustdesk.com/download"
 echo ""
-echo "💡 How to Connect:"
-echo "1. Download Microsoft Remote Desktop app:"
-echo "   - Windows: Built-in Remote Desktop Connection"
-echo "   - Mac: Microsoft Remote Desktop from App Store"
-echo "   - Android/iOS: Microsoft Remote Desktop app"
-echo "2. Enter the RDP Address and port 3389"
-echo "3. Use the username and password above"
+echo "🔧 Connection Instructions:"
+echo "1. Install RustDesk on your local machine"
+echo "2. In RustDesk settings, set ID Server to: $RUSTDESK_ADDR"
+echo "3. The RustDesk ID will be generated automatically"
+echo "4. Share that ID with others to connect"
 echo ""
-echo "⚠️ Important Notes:"
-echo "- If connection fails, wait 30 seconds and try again"
-echo "- Google Cloud Shell may block direct IP display"
-echo "- Use the address format: [ngrok-url]:3389"
-echo "- Session automatically ends after 12 hours"
-echo ""
-echo "🔄 Keeping session alive for 12 hours (43200 seconds)..."
+echo "⏳ The RustDesk ID will appear once fully started (1-2 minutes)"
 
-# Countdown timer
-END_TIME=$((SECONDS + 43200))
-while [[ $SECONDS -lt $END_TIME ]]; do
-    REMAINING=$((END_TIME - SECONDS))
-    HOURS=$((REMAINING / 3600))
-    MINUTES=$(( (REMAINING % 3600) / 60 ))
-    SECONDS_REM=$((REMAINING % 60))
-    
-    printf "\r🕒 Running: %02d:%02d:%02d remaining" $HOURS $MINUTES $SECONDS_REM
+# Display countdown
+for i in {1..120}; do
+    echo -ne "⏰ Waiting for RustDesk to start... $i/120 seconds\r"
     sleep 1
 done
 
 echo ""
-echo ""
-echo "⏰ Session ended after 12 hours"
-echo "🧹 Cleaning up resources..."
-docker stop windows-desktop >/dev/null 2>&1
-echo "✅ Cleanup complete!"
+echo "🚀 RustDesk should be ready now!"
+echo "📋 Check the RustDesk ID in the application"
+echo "💡 Restart Cloud Shell if connection issues occur"
