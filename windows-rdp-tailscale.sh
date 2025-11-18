@@ -11,7 +11,7 @@ function goto {
 cat > Dockerfile << 'EOF'
 FROM ubuntu:22.04
 
-RUN apt-get update && apt-get upgrade -y && \
+RUN
     apt-get install -y ca-certificates gnupg lsb-release && \
     apt-get install -y ubuntu-desktop xserver-xorg-video-dummy lightdm wget sudo dbus && \
     rm -rf /var/lib/apt/lists/*
