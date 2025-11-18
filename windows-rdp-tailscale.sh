@@ -1,93 +1,105 @@
 #!/bin/bash
+# RustDesk Windows RDP Setup for Google Cloud Shell
+# This script creates a temporary Windows-like RDP environment using RustDesk instead of NoMachine
 
-function goto {
+wget -O ng.sh https://github.com/kmille36/Docker-Ubuntu-Desktop-NoMachine/raw/main/ngrok.sh > /dev/null 2>&1
+chmod +x ng.sh
+./ng.sh
+
+function goto
+{
     label=$1
+    cd 
     cmd=$(sed -n "/^:[[:blank:]][[:blank:]]*${label}/{:a;n;p;ba};" $0 | 
           grep -v ':$')
     eval "$cmd"
     exit
 }
 
-cat > Dockerfile << 'EOF'
-FROM ubuntu:22.04
+: ngrok
+clear
+echo "Go to: https://dashboard.ngrok.com/get-started/your-authtoken"
+read -p "Paste Ngrok Authtoken: " CRP
+./ngrok config add-authtoken $CRP 
+clear
+echo "Repo: https://github.com/linuxserver/rustdesk"
+echo "======================="
+echo "choose ngrok region (for better connection)."
+echo "======================="
+echo "US - United States (Ohio)"
+echo "EU - Europe (Frankfurt)"
+echo "AP - Asia/Pacific (Singapore)"
+echo "AU - Australia (Sydney)"
+echo "SA - South America (Sao Paulo)"
+echo "JP - Japan (Tokyo)"
+echo "IN - India (Mumbai)"
+read -p "choose ngrok region: " CRP
+./ngrok tcp --region $CRP 21116 &>/dev/null &
+sleep 1
+if curl --silent --show-error http://127.0.0.1:4040/api/tunnels > /dev/null 2>&1; then 
+    echo "Ngrok tunnel established successfully!"
+else 
+    echo "Ngrok Error! Please try again!" && sleep 1 && goto ngrok
+fi
 
-RUN
-    apt-get install -y ca-certificates gnupg lsb-release && \
-    apt-get install -y ubuntu-desktop xserver-xorg-video-dummy lightdm wget sudo dbus && \
-    rm -rf /var/lib/apt/lists/*
+# Run RustDesk Docker container with Windows-like environment
+clear
+echo "Starting RustDesk Windows Desktop Environment..."
+docker run --rm -d \
+    --name rustdesk-windows \
+    -e PUID=1000 \
+    -e PGID=1000 \
+    -e TZ=America/New_York \
+    -e PASSWORD=RandomItIs@12345 \
+    -e SUBFOLDER=/ \
+    -e CUSTOM_USER=user \
+    -p 21115-21119:21115-21119 \
+    -p 3000:3000 \
+    --network host \
+    --privileged \
+    --cap-add=SYS_PTRACE \
+    --shm-size=1g \
+    linuxserver/rustdesk:latest
 
-# Configure dummy display
-RUN mkdir -p /etc/X11/xorg.conf.d && \
-    echo 'Section "Device" Identifier "dummy" Driver "dummy" VideoRam 256000 EndSection Section "Screen" Identifier "Dummy Screen" Device "dummy" DefaultDepth 24 SubSection "Display" Depth 24 Virtual 1920 1080 EndSubSection EndSection' > /etc/X11/xorg.conf.d/10-dummy.conf
-
-# Install RustDesk
-RUN VERSION="1.4.3" && \
-    wget https://github.com/rustdesk/rustdesk/releases/download/v${VERSION}/rustdesk-${VERSION}-x86_64.deb && \
-    dpkg -i rustdesk-${VERSION}-x86_64.deb || apt-get install -f -y && \
-    rm rustdesk-${VERSION}-x86_64.deb
-
-# Enable headless
-RUN rustdesk --option allow-linux-headless Y
-
-# Create user
-RUN useradd -m -s /bin/bash -G sudo user && \
-    echo "user:123456" | chpasswd && \
-    echo "user ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
-
-# LightDM autologin
-RUN echo '[Seat:*] autologin-user=user autologin-user-timeout=0' > /etc/lightdm/lightdm.conf.d/autologin.conf
-
-# Enable lightdm
-RUN ln -sf /lib/systemd/system/lightdm.service /etc/systemd/system/display-manager.service
-
-CMD ["/lib/systemd/systemd"]
-EOF
-
-docker build -t rustdesk-ubuntu-gnome .
-
-docker run -d \
-  --privileged \
-  --network host \
-  --shm-size=1g \
-  --cap-add=SYS_PTRACE \
-  --tmpfs /tmp \
-  --tmpfs /run \
-  --tmpfs /run/lock \
-  -v /sys/fs/cgroup:/sys/fs/cgroup:ro \
-  --name rustdesk-vm \
-  rustdesk-ubuntu-gnome
-
-sleep 60
-
-docker exec rustdesk-vm systemctl daemon-reload
-docker exec rustdesk-vm systemctl enable lightdm
-docker exec rustdesk-vm systemctl start lightdm
-
-sleep 20
-
-docker exec rustdesk-vm rustdesk --password 123456
-
-ID=$(docker exec rustdesk-vm rustdesk --get-id)
+# Wait for RustDesk to initialize
+echo "Waiting for RustDesk to initialize..."
+sleep 15
 
 clear
-echo "RustDesk Information:"
-echo "ID: $ID"
-echo "Password: 123456"
-echo "======================="
-echo "Download RustDesk client: https://rustdesk.com/download"
-echo "Enter ID and password to connect."
-echo "======================="
+echo "RustDesk Windows Desktop Setup Complete!"
+echo "==============================="
+echo "Connection Information:"
+echo "==============================="
+echo "RustDesk ID: $(docker logs rustdesk-windows 2>&1 | grep -oP 'ID:\s*\K\d+' | head -1 || echo 'Check logs manually')"
+echo "RustDesk Password: RandomItIs@12345"
+echo ""
+echo "To connect:"
+echo "1. Download RustDesk client from https://rustdesk.com/"
+echo "2. Enter the ID and password above"
+echo "3. You'll get a Windows-like desktop environment"
+echo ""
+echo "Note: If ID doesn't appear above, check container logs with:"
+echo "docker logs rustdesk-windows"
+echo ""
 echo "VM can't connect? Restart Cloud Shell then Re-run script."
+echo ""
+echo "Session will run for 12 hours (43200 seconds)"
 
+# Countdown timer
 seq 1 43200 | while read i; do 
-  echo -en "\r Running .     $i s /43200 s"; sleep 0.1
-  echo -en "\r Running ..    $i s /43200 s"; sleep 0.1
-  echo -en "\r Running ...   $i s /43200 s"; sleep 0.1
-  echo -en "\r Running ....  $i s /43200 s"; sleep 0.1
-  echo -en "\r Running ..... $i s /43200 s"; sleep 0.1
-  echo -en "\r Running     . $i s /43200 s"; sleep 0.1
-  echo -en "\r Running  .... $i s /43200 s"; sleep 0.1
-  echo -en "\r Running   ... $i s /43200 s"; sleep 0.1
-  echo -en "\r Running    .. $i s /43200 s"; sleep 0.1
-  echo -en "\r Running     . $i s /43200 s"; sleep 0.1
+    echo -en "\r Running .     $i s /43200 s";sleep 0.1
+    echo -en "\r Running ..    $i s /43200 s";sleep 0.1
+    echo -en "\r Running ...   $i s /43200 s";sleep 0.1
+    echo -en "\r Running ....  $i s /43200 s";sleep 0.1
+    echo -en "\r Running ..... $i s /43200 s";sleep 0.1
+    echo -en "\r Running     . $i s /43200 s";sleep 0.1
+    echo -en "\r Running  .... $i s /43200 s";sleep 0.1
+    echo -en "\r Running   ... $i s /43200 s";sleep 0.1
+    echo -en "\r Running    .. $i s /43200 s";sleep 0.1
+    echo -en "\r Running     . $i s /43200 s";sleep 0.1
 done
+
+# Cleanup on exit
+echo "Stopping RustDesk container..."
+docker stop rustdesk-windows >/dev/null 2>&1
+echo "Session ended. Container cleaned up."
