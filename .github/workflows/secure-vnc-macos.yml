@@ -1,90 +1,53 @@
-name: Secure NoMachine macOS Remote Desktop (Tailscale)
-
-on:
-  workflow_dispatch:
+name: macOS GUI via Tailscale & VNC
+on: workflow_dispatch
 
 jobs:
-  remote-macos:
+  gui:
     runs-on: macos-latest
-    timeout-minutes: 420
-
     steps:
+      - name: Install Tailscale
+        run: |
+          brew install tailscale
+          sudo tailscaled --tun=userspace-networking &
+          sleep 5
+          sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=github-macos
+          # Wait for Tailscale IP
+          for i in {1..10}; do
+            IP=$(sudo tailscale ip -4 2>/dev/null || true)
+            if [ -n "$IP" ]; then
+              echo "Tailscale IP: $IP"
+              break
+            fi
+            sleep 5
+          done
 
-    # ----------------------------------------
-    # Step 1: Install NoMachine safely
-    # ----------------------------------------
-    - name: Install NoMachine Server + Virtual Desktop
-      run: |
-        echo "Installing NoMachine..."
-        brew install --cask nomachine
+      - name: Enable Screen Sharing (VNC)
+        run: |
+          # Enable the VNC server
+          sudo defaults write /var/db/launchd.db/com.apple.launchd/overrides.plist com.apple.screensharing -dict Disabled -bool false
+          sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist
 
-        # Path inside app bundle
-        NX_SERVER="/Applications/NoMachine.app/Contents/MacOS/nxserver"
+          # Set VNC password (max 8 characters!)
+          VNC_PASS="yourvnc"  # change this
+          echo "$VNC_PASS" | sudo tee /etc/vncpasswd > /dev/null
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -activate -configure -access -off -restart -agent -privs -all \
+            -allowAccessFor -allUsers -setVNCPassword -vncpasswd /etc/vncpasswd
 
-        echo "Waiting for nxserver binary inside app bundle..."
-        for i in {1..30}; do
-          [ -f "$NX_SERVER" ] && break
-          sleep 2
-        done
+      - name: Create a dummy graphical session
+        run: |
+          # The trick: launch an app that requires a GUI – this forces WindowServer to start.
+          # Even if it fails initially, the attempt may trigger a graphical context.
+          # We'll run it in the background.
+          nohup open -a Terminal.app > /tmp/open.log 2>&1 &
+          # Give it time to launch
+          sleep 10
 
-        if [ ! -f "$NX_SERVER" ]; then
-          echo "❌ nxserver binary not found! Installation failed."
-          ls /Applications/NoMachine.app/Contents/MacOS || true
-          exit 1
-        fi
-
-        # Start virtual desktop mode (needed on headless runner)
-        sudo "$NX_SERVER" --virtualdesktop yes || true
-        sudo "$NX_SERVER" --restart
-
-        echo "✅ NoMachine installed and virtual desktop started"
-
-    # ----------------------------------------
-    # Step 2: Connect Tailscale
-    # ----------------------------------------
-    - name: Connect Tailscale
-      uses: tailscale/github-action@v4
-      with:
-        authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
-        statedir: /tmp/tailscale-state
-
-    # ----------------------------------------
-    # Step 3: Get Tailscale IP
-    # ----------------------------------------
-    - name: Get Tailscale IP
-      run: |
-        TS_IP=$(tailscale ip -4)
-        echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
-        echo "Tailscale IP saved: $TS_IP"
-
-    # ----------------------------------------
-    # Step 4: Verify NoMachine Port
-    # ----------------------------------------
-    - name: Verify NoMachine Accessibility
-      run: |
-        sleep 5
-        echo "Checking TCP port 4000 on ${{ env.TAILSCALE_IP }}..."
-        nc -z -w 5 "${{ env.TAILSCALE_IP }}" 4000 || {
-          echo "❌ Port 4000 not reachable!"
-          exit 1
-        }
-        echo "✅ NoMachine port 4000 is open"
-
-    # ----------------------------------------
-    # Step 5: Keep workflow alive for connection
-    # ----------------------------------------
-    - name: Maintain session
-      run: |
-        echo ""
-        echo "=== CONNECT WITH NOMACHINE ==="
-        echo "Protocol: NX (NoMachine)"
-        echo "Host: ${{ env.TAILSCALE_IP }}:4000"
-        echo "Username: runner"
-        echo "Password: leave blank"
-        echo "⚠ First connection may take 20–40 seconds for virtual desktop to render"
-        echo "=============================="
-        echo ""
-        while true; do
-          date
-          sleep 300
-        done
+      - name: Keep workflow alive (prevents auto‑close)
+        run: |
+          echo "Session is ready. Connect via VNC to your Tailscale IP:5900"
+          echo "Job will stay alive for 6 hours (GitHub limit)."
+          # Infinite loop to keep the job running
+          while true; do
+            sleep 3600
+          done
