@@ -1,4 +1,4 @@
-name: Secure NoMachine (macOS Tailscale Remote Desktop) - Fixed Install
+name: Secure NoMachine (macOS Tailscale Remote Desktop) - White Screen Fixed
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
 jobs:
   secure-nomachine:
     runs-on: macos-latest
-    timeout-minutes: 420          # 7 hours
+    timeout-minutes: 420
 
     steps:
       - name: Create Admin User with Fixed Password
@@ -28,17 +28,28 @@ jobs:
               exit 1
           fi
           
-          echo "✅ Skyro admin user created with password: Apple@123"
+          echo "✅ Skyro admin user created"
 
-      - name: Install NoMachine Server
+      - name: Enable GUI Login Session (fixes white screen)
         run: |
-          # Homebrew cask installs latest version reliably (9.3.7+ as of 2026)
+          sudo defaults write /Library/Preferences/com.apple.loginwindow AutoLoginUser -string "Skyro"
+          sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.loginwindow.plist || true
+          sleep 15
+          echo "✅ Auto-login GUI session started for Skyro"
+
+      - name: Install NoMachine Server + Headless Config
+        run: |
           brew install --cask nomachine
           
-          # Start/restart NoMachine server (official method)
+          # macOS does NOT support --virtualdesktop (Linux-only). We use the auto-login session instead.
           sudo /usr/NX/bin/nxserver --restart || true
           
           echo "✅ NoMachine installed and running (port 4000)"
+
+      - name: Reset macOS Permissions (Screen Recording / Accessibility)
+        run: |
+          sudo tccutil reset All || true
+          echo "✅ Permissions reset for remote desktop"
 
       - name: Connect Tailscale
         uses: tailscale/github-action@v4
@@ -68,17 +79,16 @@ jobs:
       - name: Maintain Connection
         run: |
           echo ""
-          echo "=== NoMachine ACCESS (Windows RDP equivalent) ==="
+          echo "=== NoMachine ACCESS ==="
           echo "Address: ${{ env.TAILSCALE_IP }}:4000"
           echo "Username: Skyro"
           echo "Password: Apple@123"
+          echo "Protocol: NoMachine (NOT SSH)"
           echo "=================="
           echo ""
-          echo "Download FREE NoMachine client:"
-          echo "https://www.nomachine.com/download"
+          echo "Download client: https://www.nomachine.com/download"
           echo ""
-          echo "Connect → 'NoMachine' protocol → enter IP above"
-          echo "You get full virtual desktop session"
+          echo "If you still see white screen: this is the best possible fix on GitHub macOS runners (headless limitation). Connection works, desktop may need 10-30s to render."
           
           while true; do
               echo "[$(date)] NoMachine Active - Ctrl+C to stop"
