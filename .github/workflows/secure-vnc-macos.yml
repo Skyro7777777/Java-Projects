@@ -1,4 +1,4 @@
-name: macOS GUI (VNC + NoMachine)
+name: macOS GUI Final Diagnostic (with Screenshot)
 on: workflow_dispatch
 
 jobs:
@@ -10,7 +10,7 @@ jobs:
           brew install tailscale
           sudo tailscaled --tun=userspace-networking &
           sleep 5
-          sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=github-macos-dual
+          sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=github-macos-diag
           for i in {1..10}; do
             IP=$(sudo tailscale ip -4 2>/dev/null || true)
             if [ -n "$IP" ]; then
@@ -51,17 +51,28 @@ jobs:
           sleep 15
           echo "✅ NoMachine ready on port 4000 (login with vncuser / Apple@123)"
 
-      - name: Wake display aggressively
+      - name: Wake display
         run: |
           brew install cliclick
-          # Move mouse, click, and type a harmless key
           cliclick c:. m:0,0 c:. kd:ctrl ku:ctrl
           echo "✅ Display wake commands sent"
 
-      - name: Keep alive and show connection info
+      - name: Capture screenshot of current desktop
+        run: |
+          # Screencapture as the console user (runner) to see what's actually displayed
+          sudo -u runner screencapture -x /tmp/desktop.png
+          echo "Screenshot saved to /tmp/desktop.png"
+
+      - name: Upload screenshot as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-screenshot
+          path: /tmp/desktop.png
+
+      - name: Display connection info and keep alive
         run: |
           echo "========================================================="
-          echo "✅ SERVICES READY"
+          echo "✅ DIAGNOSTIC RUN COMPLETE"
           echo "========================================================="
           echo "Tailscale IP: ${{ env.TAILSCALE_IP }}"
           echo ""
@@ -74,11 +85,9 @@ jobs:
           echo "   Port: 4000"
           echo "   Login: vncuser / Apple@123"
           echo ""
-          echo "📱 ANDROID TIPS:"
-          echo "   - If VNC shows black, try NoMachine (free app)"
-          echo "   - In NoMachine client, set connection quality to LAN"
-          echo "   - Enable 'Virtual desktop' in NoMachine settings"
+          echo "📸 A screenshot of the current desktop has been uploaded as an artifact."
+          echo "   Download it from the workflow run page to see if the system is rendering anything."
           echo ""
-          echo "⏳ Job will stay alive for 6 hours"
+          echo "⏳ Job will stay alive for 6 hours for you to connect."
           echo "========================================================="
           while true; do sleep 3600; done
