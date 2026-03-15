@@ -1,0 +1,118 @@
+name: Secure VNC (macOS Tailscale Remote Desktop)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-vnc:
+    runs-on: macos-latest
+    timeout-minutes: 25200
+
+    steps:
+      - name: Create VNC User with Secure Password
+        run: |
+          # Generate strong random password (same style as your Windows workflow)
+          password=$(LC_ALL=C tr -dc 'A-Za-z0-9!@#$%^&*()_+' < /dev/urandom | head -c 16)
+          
+          # Create Skyro user (admin)
+          sudo sysadminctl -addUser Skyro \
+            -password "$password" \
+            -fullName "Skyro" \
+            -admin
+          
+          # Add to admin group explicitly (just in case)
+          sudo dscl . -append /Groups/admin GroupMembership Skyro
+          
+          echo "VNC_USER=Skyro" >> $GITHUB_ENV
+          echo "VNC_PASSWORD=$password" >> $GITHUB_ENV
+          
+          if ! id Skyro &>/dev/null; then
+              echo "User creation failed"
+              exit 1
+          fi
+          
+          echo "✅ Skyro user created"
+
+      - name: Configure Screen Sharing (VNC) + Set Password
+        run: |
+          # Enable Screen Sharing (VNC) with the same password we created
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -activate \
+            -configure \
+            -access -on \
+            -users Skyro \
+            -privs -all \
+            -clientopts -setvnclegacy -vnclegacy yes \
+            -clientopts -setvncpw -vncpw "${{ env.VNC_PASSWORD }}" \
+            -restart -agent
+          
+          echo "✅ Screen Sharing (VNC on port 5900) enabled for user Skyro"
+
+      - name: Install Tailscale
+        run: |
+          TS_PKG="Tailscale-latest-macos.pkg"
+          curl -LO "https://pkgs.tailscale.com/stable/${TS_PKG}"
+          sudo installer -pkg "${TS_PKG}" -target /
+          rm -f "${TS_PKG}"
+          
+          # Verify CLI is available
+          if [[ ! -x "/Applications/Tailscale.app/Contents/MacOS/Tailscale" ]]; then
+              echo "Tailscale installation failed"
+              exit 1
+          fi
+          echo "✅ Tailscale installed"
+
+      - name: Establish Tailscale Connection
+        run: |
+          CLI="/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+          
+          # Bring up Tailscale
+          "$CLI" up \
+            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} \
+            --hostname=gh-runner-macos-$GITHUB_RUN_ID
+          
+          # Wait for IP
+          TS_IP=""
+          for i in {1..10}; do
+              TS_IP=$("$CLI" ip -4)
+              if [[ -n "$TS_IP" ]]; then
+                  break
+              fi
+              sleep 5
+          done
+          
+          if [[ -z "$TS_IP" ]]; then
+              echo "Tailscale IP not assigned"
+              exit 1
+          fi
+          
+          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
+          echo "✅ Tailscale IP: $TS_IP"
+
+      - name: Verify VNC Accessibility
+        run: |
+          echo "Tailscale IP: ${{ env.TAILSCALE_IP }}"
+          
+          # Test port 5900 (VNC) is reachable on the Tailscale IP
+          if ! nc -z -w 5 "${{ env.TAILSCALE_IP }}" 5900; then
+              echo "TCP connection to VNC port 5900 failed"
+              exit 1
+          fi
+          echo "✅ TCP connectivity successful!"
+
+      - name: Maintain Connection
+        run: |
+          echo ""
+          echo "=== VNC ACCESS ==="
+          echo "Address: vnc://${{ env.TAILSCALE_IP }}:5900"
+          echo "VNC Password: ${{ env.VNC_PASSWORD }}"
+          echo "User (if prompted): ${{ env.VNC_USER }}"
+          echo "=================="
+          echo ""
+          echo "Use ANY VNC client (see below)"
+          
+          # Keep runner alive
+          while true; do
+              echo "[$(date)] VNC Active - Use Ctrl+C in workflow to terminate"
+              sleep 300
+          done
