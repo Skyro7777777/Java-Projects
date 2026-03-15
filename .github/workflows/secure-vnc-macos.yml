@@ -1,12 +1,11 @@
-
-name: macOS GUI (AskLink + Tailscale)
+name: macOS GUI (AskLink via App Store)
 on: workflow_dispatch
 
 jobs:
   gui:
     runs-on: macos-latest
     steps:
-      - name: Install and connect Tailscale
+      - name: Install Tailscale
         run: |
           brew install tailscale
           sudo tailscaled --tun=userspace-networking &
@@ -34,39 +33,45 @@ jobs:
           sudo createhomedir -c -u vncuser
           echo "✅ Created user: vncuser (password: Apple@123)"
 
-      - name: Install AskLink
+      - name: Enable Screen Sharing (VNC) with password Apple@12
         run: |
-          # AskLink can be installed via Homebrew Cask
-          brew install --cask asklink
-          echo "✅ AskLink installed. Please ensure it's running and note the Device ID/Password from its interface."
-          # Note: Starting AskLink might require user interaction or a specific command.
-          # Often, these apps start automatically after installation or have a launchctl service.
-          # You might need to manually start it from the GUI if it doesn't start automatically.
-          # For now, we'll assume it's running. You may need to open the app manually if the screen becomes visible later.
-          echo "If AskLink is not running, you may need to start it from the Applications folder once connected via another method (like VNC)."
+          sudo defaults write /var/db/launchd.db/com.apple.launchd/overrides.plist com.apple.screensharing -dict Disabled -bool false
+          sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null || true
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -configure -clientopts -setvncpw -vncpw "Apple@12"
+          sudo launchctl unload /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null
+          sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist
+          sleep 5
+          echo "✅ VNC ready on port 5900 (password: Apple@12)"
 
-      - name: Wake display and keep alive
+      - name: Open App Store for AskLink installation (manual step)
+        run: |
+          echo "========================================================="
+          echo "📱 INSTRUCTIONS FOR NEXT STEP"
+          echo "========================================================="
+          echo "1. Connect via VNC to ${{ env.TAILSCALE_IP }}:5900"
+          echo "   VNC Password: Apple@12"
+          echo ""
+          echo "2. Even if the screen is black, the desktop is live."
+          echo "   Follow the navigation guide to install AskLink:"
+          echo ""
+          echo "   a) Press Cmd+Space → type 'App Store' → Enter"
+          echo "   b) Click search (top-right) → type 'AskLink' → Enter"
+          echo "   c) Click 'Get' (center of screen) → Click 'Install'"
+          echo "   d) Press Cmd+Space → type 'AskLink' → Enter"
+          echo "   e) Note the Device ID and password shown"
+          echo ""
+          echo "3. On your Android, install AskLink from Play Store"
+          echo "4. Enter the Device ID and password"
+          echo "5. You should see the macOS desktop!"
+          echo "========================================================="
+
+      - name: Wake display
         run: |
           brew install cliclick
           cliclick c:. m:0,0 c:.
-          echo "========================================================="
-          echo "✅ SERVICES READY"
-          echo "========================================================="
-          echo "Tailscale IP: ${{ env.TAILSCALE_IP }}"
-          echo ""
-          echo "🔹 AskLink:"
-          echo "   Open the AskLink app on your Android device."
-          echo "   You will need the Device ID and temporary password displayed on the runner's AskLink interface."
-          echo "   Since you can't see it yet, you might need to use the VNC fallback ONCE to view it."
-          echo ""
-          echo "🔹 VNC (fallback to see AskLink's code):"
-          echo "   If AskLink's connection code isn't visible, use VNC to connect just once to view it."
-          echo "   Port: 5900, VNC Password: Apple@12, Login: vncuser / Apple@123"
-          echo ""
-          echo "📱 ONCE YOU HAVE THE ASKLINK CODE:"
-          echo "   1. Enter it in your Android AskLink app."
-          echo "   2. You should see the macOS desktop via AskLink's virtual display, bypassing the black screen."
-          echo ""
+
+      - name: Keep alive
+        run: |
           echo "⏳ Job will stay alive for 6 hours."
-          echo "========================================================="
           while true; do sleep 3600; done
