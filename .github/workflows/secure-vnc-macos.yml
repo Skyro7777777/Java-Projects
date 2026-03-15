@@ -1,4 +1,4 @@
-name: Secure VNC (macOS Tailscale Remote Desktop) - Black Screen Fixed
+name: Secure VNC (macOS Tailscale Remote Desktop) - Black Screen & TCC Fixed
 
 on:
   workflow_dispatch:
@@ -30,19 +30,19 @@ jobs:
           
           echo "✅ Skyro user created with password: Apple@123"
 
-      - name: Reset Permissions + Enable Auto-Login (Fix Black Screen)
+      - name: Reset TCC Permissions + Enable Auto-Login (Fix Black Screen)
         run: |
-          # Reset the exact permissions causing black screen
-          sudo tccutil reset ScreenRecording
-          sudo tccutil reset Accessibility
+          # Correct service name + ignore "no permissions to reset" error (normal on GitHub runner)
+          sudo tccutil reset ScreenCapture || true
+          sudo tccutil reset Accessibility || true
           
-          # Enable auto-login for Skyro (guarantees active desktop session)
+          # Force auto-login so we get a real desktop (not login screen → black VNC)
           sudo defaults write /Library/Preferences/com.apple.loginwindow AutoLoginUser -string "Skyro"
           
-          # Restart loginwindow so auto-login takes effect immediately
+          # Restart loginwindow to apply immediately
           sudo killall loginwindow || true
           
-          echo "✅ TCC permissions reset + auto-login enabled"
+          echo "✅ TCC reset + auto-login enabled (black screen fixed)"
 
       - name: Configure Screen Sharing (VNC)
         run: |
@@ -92,8 +92,8 @@ jobs:
           echo "User (if prompted): Skyro"
           echo "=================="
           echo ""
-          echo "✅ Desktop should now be visible (no black screen)"
-          echo "Connect with ANY VNC client (macOS Screen Sharing, RealVNC Viewer, bVNC, etc.)"
+          echo "✅ Full desktop should now be visible (no black screen)"
+          echo "Use any VNC client: macOS Screen Sharing, RealVNC Viewer, bVNC, etc."
           
           while true; do
               echo "[$(date)] VNC Active - Use Ctrl+C in workflow to terminate"
