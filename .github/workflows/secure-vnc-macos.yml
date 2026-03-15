@@ -1,4 +1,4 @@
-name: macOS GUI (Simple "mac" password)
+name: macOS GUI (Password "MacUser12")
 on: workflow_dispatch
 
 jobs:
@@ -10,7 +10,7 @@ jobs:
           brew install tailscale
           sudo tailscaled --tun=userspace-networking &
           sleep 5
-          sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=github-macos-simple
+          sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=github-macos-final
           for i in {1..10}; do
             IP=$(sudo tailscale ip -4 2>/dev/null || true)
             if [ -n "$IP" ]; then
@@ -20,7 +20,7 @@ jobs:
             sleep 5
           done
 
-      - name: Create user with simple password "mac"
+      - name: Create user with password "MacUser12"
         run: |
           sudo dscl . -create /Users/vncuser
           sudo dscl . -create /Users/vncuser UserShell /bin/bash
@@ -28,27 +28,23 @@ jobs:
           sudo dscl . -create /Users/vncuser UniqueID "510"
           sudo dscl . -create /Users/vncuser PrimaryGroupID 20
           sudo dscl . -create /Users/vncuser NFSHomeDirectory /Users/vncuser
-          sudo dscl . -passwd /Users/vncuser "mac"
+          sudo dscl . -passwd /Users/vncuser "MacUser12"
           sudo dscl . -append /Groups/admin GroupMembership vncuser
           sudo createhomedir -c -u vncuser
-          echo "✅ Created user: vncuser (password: mac)"
+          echo "✅ Created user: vncuser (password: MacUser12)"
 
-      - name: Enable Screen Sharing with VNC password "mac"
+      - name: Enable Screen Sharing with VNC password "MacUser12"
         run: |
-          # Enable the VNC server
           sudo defaults write /var/db/launchd.db/com.apple.launchd/overrides.plist com.apple.screensharing -dict Disabled -bool false
           sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null || true
 
-          # Set VNC password to "mac" (3 chars, well under 8 char limit)
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -configure -clientopts -setvncpw -vncpw "mac"
+            -configure -clientopts -setvncpw -vncpw "MacUser12"
 
-          # Restart the service
           sudo launchctl unload /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null
           sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist
-          
           sleep 5
-          echo "✅ VNC server ready with password: mac"
+          echo "✅ VNC server ready with password: MacUser12"
 
       - name: Wake display
         run: |
@@ -62,19 +58,15 @@ jobs:
           echo "========================================================="
           echo "Tailscale IP: ${{ env.TAILSCALE_IP }}"
           echo ""
-          echo "📱 CONNECTION INSTRUCTIONS (ANDROID):"
-          echo "----------------------------------------"
-          echo "1. Open your VNC client (bVNC, RealVNC, etc.)"
-          echo "2. Create new connection with:"
-          echo "   - Connection Type: Basic VNC"
-          echo "   - VNC Server: ${{ env.TAILSCALE_IP }}:5900"
-          echo "   - VNC Username: (leave BLANK)"
-          echo "   - VNC Password: mac"
+          echo "📱 ANDROID CONNECTION:"
+          echo "   Connection Type: Basic VNC"
+          echo "   VNC Server: ${{ env.TAILSCALE_IP }}:5900"
+          echo "   VNC Username: (leave blank)"
+          echo "   VNC Password: MacUser12"
           echo ""
-          echo "3. After connecting, you'll see macOS login screen"
-          echo "4. Log in with:"
-          echo "   - Username: vncuser"
-          echo "   - Password: mac"
+          echo "👉 After connecting, log in with:"
+          echo "   Username: vncuser"
+          echo "   Password: MacUser12"
           echo ""
           echo "⏳ Job will stay alive for 6 hours"
           echo "========================================================="
