@@ -1,95 +1,77 @@
-name: Secure NoMachine (macOS Tailscale Remote Desktop) - Virtual Desktop Mode
+name: NoMachine macOS Stable (Tailscale Remote Desktop)
 
 on:
   workflow_dispatch:
 
 jobs:
-  secure-nomachine:
-    runs-on: macos-latest
+  mac:
+    runs-on: macos-13
     timeout-minutes: 420
 
     steps:
-      - name: Create Admin User with Fixed Password
-        run: |
-          password="Apple@123"
-          
-          sudo sysadminctl -addUser Skyro \
-            -password "$password" \
-            -fullName "Skyro" \
-            -admin
-          
-          sudo dscl . -append /Groups/admin GroupMembership Skyro
-          
-          echo "NM_USER=Skyro" >> $GITHUB_ENV
-          echo "NM_PASSWORD=$password" >> $GITHUB_ENV
-          
-          if ! id Skyro &>/dev/null; then
-              echo "User creation failed"
-              exit 1
+
+    - name: Install NoMachine safely
+      run: |
+        brew install --cask nomachine
+
+        echo "Waiting for NoMachine install..."
+
+        for i in {1..30}; do
+          if [ -f /usr/NX/bin/nxserver ]; then
+            echo "nxserver found"
+            break
           fi
-          
-          echo "✅ Skyro admin user created"
+          sleep 2
+        done
 
-      - name: Skip loginwindow hack (use virtual desktop)
-        run: |
-          echo "Skipping AutoLogin — using NoMachine virtual display"
+        if [ ! -f /usr/NX/bin/nxserver ]; then
+          echo "NoMachine not installed"
+          ls /usr
+          ls /usr/NX || true
+          exit 1
+        fi
 
-      - name: Install NoMachine Server + Virtual Desktop
-        run: |
-          brew install --cask nomachine
+        sudo /usr/NX/bin/nxserver --virtualdesktop yes || true
+        sudo /usr/NX/bin/nxserver --restart
 
-          sudo /usr/NX/bin/nxserver --virtualdesktop yes || true
-          sudo /usr/NX/bin/nxserver --restart
+        echo "NoMachine ready"
 
-          sleep 15
 
-          echo "✅ NoMachine virtual desktop enabled"
+    - name: Connect Tailscale
+      uses: tailscale/github-action@v4
+      with:
+        authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        tags: tag:gh-mac
+        statedir: /tmp/tailscale-state
 
-      - name: Reset macOS Permissions
-        run: |
-          sudo tccutil reset All || true
-          echo "✅ Screen Recording / Accessibility permissions reset"
 
-      - name: Connect Tailscale
-        uses: tailscale/github-action@v4
-        with:
-          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
-          tags: tag:gh-runner-macos
-          statedir: /tmp/tailscale-state
+    - name: Get Tailscale IP
+      run: |
+        TS=$(tailscale ip -4)
+        echo "IP=$TS" >> $GITHUB_ENV
+        echo "Tailscale IP: $TS"
 
-      - name: Set Hostname + Get Tailscale IP
-        run: |
-          tailscale set --hostname=gh-runner-macos-$GITHUB_RUN_ID
-          
-          TS_IP=$(tailscale ip -4)
-          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
-          echo "✅ Tailscale IP: $TS_IP"
 
-      - name: Verify NoMachine Accessibility
-        run: |
-          echo "Tailscale IP: ${{ env.TAILSCALE_IP }}"
-          
-          if ! nc -z -w 5 "${{ env.TAILSCALE_IP }}" 4000; then
-              echo "TCP connection to NoMachine port 4000 failed"
-              exit 1
-          fi
-          echo "✅ TCP connectivity successful!"
+    - name: Check NoMachine port
+      run: |
+        sleep 5
+        nc -z 127.0.0.1 4000 || exit 1
+        echo "Port 4000 OK"
 
-      - name: Maintain Connection
-        run: |
-          echo ""
-          echo "=== NoMachine ACCESS ==="
-          echo "Address: ${{ env.TAILSCALE_IP }}:4000"
-          echo "Username: Skyro"
-          echo "Password: Apple@123"
-          echo "Protocol: NoMachine (NOT SSH)"
-          echo "=================="
-          echo ""
-          echo "Download client: https://www.nomachine.com/download"
-          echo ""
-          echo "⚠️ Connect and wait 20-30s — virtual desktop mode active."
-          
-          while true; do
-              echo "[$(date)] NoMachine Active - Ctrl+C to stop"
-              sleep 300
-          done
+
+    - name: Maintain session
+      run: |
+        echo ""
+        echo "=== CONNECT WITH NOMACHINE ==="
+        echo "Address: ${{ env.IP }}:4000"
+        echo "Protocol: NX"
+        echo "User: runner"
+        echo "Password: (leave empty)"
+        echo ""
+        echo "⚠ First connection may take 20–40 sec"
+        echo ""
+
+        while true; do
+          date
+          sleep 300
+        done
