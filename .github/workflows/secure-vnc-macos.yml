@@ -30,16 +30,16 @@ jobs:
           
           echo "✅ Skyro admin user created"
 
-      - name: Enable GUI Login Session (Critical fix for white screen)
+      - name: Enable GUI Login Session (alt method)
         run: |
-          sudo defaults write /Library/Preferences/com.apple.loginwindow AutoLoginUser -string "Skyro"
-          
-          # Modern bootstrap (replaces old load command that caused your "Input/output error")
+          sudo /usr/libexec/PlistBuddy -c "Add :autoLoginUser string Skyro" /Library/Preferences/com.apple.loginwindow.plist || true
+          sudo defaults write /Library/Preferences/com.apple.loginwindow autoLoginUser Skyro || true
+
           sudo launchctl bootout system /System/Library/LaunchDaemons/com.apple.loginwindow.plist 2>/dev/null || true
           sudo launchctl bootstrap system /System/Library/LaunchDaemons/com.apple.loginwindow.plist || true
-          
-          sleep 25
-          echo "✅ Auto-login GUI session started (loginwindow bootstrapped)"
+
+          sleep 40
+          echo "✅ GUI login session enabled (autoLoginUser set + loginwindow bootstrapped)"
 
       - name: Install NoMachine Server + Headless Config
         run: |
@@ -91,7 +91,7 @@ jobs:
           echo ""
           echo "Download client: https://www.nomachine.com/download"
           echo ""
-          echo "⚠️ Wait 20-30 seconds after connecting — desktop may take time to render on GitHub runner."
+          echo "⚠️ Wait 30-60 seconds after connecting — GUI session is now forced."
           
           while true; do
               echo "[$(date)] NoMachine Active - Ctrl+C to stop"
