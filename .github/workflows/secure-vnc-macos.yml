@@ -1,4 +1,4 @@
-name: Secure VNC (macOS Tailscale Remote Desktop)
+name: Secure VNC (macOS Tailscale Remote Desktop) - Fixed Password + 7hr Timeout
 
 on:
   workflow_dispatch:
@@ -6,13 +6,13 @@ on:
 jobs:
   secure-vnc:
     runs-on: macos-latest
-    timeout-minutes: 25200
+    timeout-minutes: 420          # ← 25200 seconds = 7 hours exactly
 
     steps:
-      - name: Create VNC User with Secure Password
+      - name: Create VNC User with Fixed Password
         run: |
-          # Generate strong random password (same style as your Windows workflow)
-          password=$(LC_ALL=C tr -dc 'A-Za-z0-9!@#$%^&*()_+' < /dev/urandom | head -c 16)
+          # Fixed password as requested (no random generation)
+          password="Apple@123"
           
           # Create Skyro user (admin)
           sudo sysadminctl -addUser Skyro \
@@ -20,7 +20,7 @@ jobs:
             -fullName "Skyro" \
             -admin
           
-          # Add to admin group explicitly (just in case)
+          # Add to admin group explicitly
           sudo dscl . -append /Groups/admin GroupMembership Skyro
           
           echo "VNC_USER=Skyro" >> $GITHUB_ENV
@@ -31,11 +31,11 @@ jobs:
               exit 1
           fi
           
-          echo "✅ Skyro user created"
+          echo "✅ Skyro user created with password: Apple@123"
 
       - name: Configure Screen Sharing (VNC) + Set Password
         run: |
-          # Enable Screen Sharing (VNC) with the same password we created
+          # Enable Screen Sharing (VNC) with the fixed password
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -activate \
             -configure \
@@ -93,7 +93,7 @@ jobs:
         run: |
           echo "Tailscale IP: ${{ env.TAILSCALE_IP }}"
           
-          # Test port 5900 (VNC) is reachable on the Tailscale IP
+          # Test port 5900 (VNC) is reachable
           if ! nc -z -w 5 "${{ env.TAILSCALE_IP }}" 5900; then
               echo "TCP connection to VNC port 5900 failed"
               exit 1
@@ -105,13 +105,13 @@ jobs:
           echo ""
           echo "=== VNC ACCESS ==="
           echo "Address: vnc://${{ env.TAILSCALE_IP }}:5900"
-          echo "VNC Password: ${{ env.VNC_PASSWORD }}"
+          echo "VNC Password: ${{ env.VNC_PASSWORD }}   ← Apple@123"
           echo "User (if prompted): ${{ env.VNC_USER }}"
           echo "=================="
           echo ""
-          echo "Use ANY VNC client (see below)"
+          echo "Use ANY VNC client (Screen Sharing on Mac, RealVNC on Windows, etc.)"
           
-          # Keep runner alive
+          # Keep runner alive for the full 7 hours
           while true; do
               echo "[$(date)] VNC Active - Use Ctrl+C in workflow to terminate"
               sleep 300
