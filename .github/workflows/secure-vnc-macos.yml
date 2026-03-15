@@ -1,26 +1,20 @@
-name: macOS GUI (RustDesk Full Automation)
+name: macOS GUI (RustDesk - Simple)
 on: workflow_dispatch
 
 jobs:
   gui:
     runs-on: macos-latest
     steps:
-      - name: Install Tailscale (optional)
+      - name: Install Tailscale
         run: |
           brew install tailscale
           sudo tailscaled --tun=userspace-networking &
           sleep 5
           sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=github-macos-rustdesk || true
-          for i in {1..5}; do
-            IP=$(sudo tailscale ip -4 2>/dev/null || echo "unknown")
-            if [ "$IP" != "unknown" ]; then
-              echo "TAILSCALE_IP=$IP" >> $GITHUB_ENV
-              break
-            fi
-            sleep 5
-          done
+          IP=$(sudo tailscale ip -4 2>/dev/null || echo "unknown")
+          echo "TAILSCALE_IP=$IP" >> $GITHUB_ENV
 
-      - name: Create user vncuser with password Apple@123
+      - name: Create user vncuser
         run: |
           sudo dscl . -create /Users/vncuser
           sudo dscl . -create /Users/vncuser UserShell /bin/bash
@@ -31,194 +25,45 @@ jobs:
           sudo dscl . -passwd /Users/vncuser "Apple@123"
           sudo dscl . -append /Groups/admin GroupMembership vncuser
           sudo createhomedir -c -u vncuser
-          echo "✅ Created user: vncuser (password: Apple@123)"
 
-      - name: Install dependencies (tesseract, cliclick)
-        run: |
-          brew install tesseract cliclick
-
-      - name: Download RustDesk (official link)
+      - name: Download & Install RustDesk
         run: |
           curl -L -o /tmp/rustdesk.dmg "https://github.com/rustdesk/rustdesk/releases/download/1.4.6/rustdesk-1.4.6-x86_64.dmg"
-          echo "✅ Download complete"
-
-      - name: Install RustDesk
-        run: |
           hdiutil attach /tmp/rustdesk.dmg -nobrowse -mountpoint /Volumes/RustDesk
           cp -R "/Volumes/RustDesk/RustDesk.app" /Applications/
           hdiutil detach "/Volumes/RustDesk"
-          echo "✅ RustDesk installed to /Applications"
 
-      - name: Launch RustDesk and wait
+      - name: Reset Screen Recording permissions (this is the key step!)
+        run: |
+          # Reset the entire Screen Recording permission database
+          # This clears any stale permissions and ensures a fresh prompt
+          sudo tccutil reset ScreenCapture
+          echo "✅ Screen Recording permissions reset. RustDesk will now prompt."
+
+      - name: Launch RustDesk and capture ID
         run: |
           sudo -u vncuser open /Applications/RustDesk.app
-          echo "Waiting 20 seconds for RustDesk to initialize..."
-          sleep 20
+          sleep 15  # Wait for it to launch and generate ID
+          
+          # Take screenshot (now that permissions are reset, it should work)
+          sudo -u vncuser screencapture -x /tmp/rustdesk.png
+          
+          # Extract ID with OCR
+          brew install tesseract
+          tesseract /tmp/rustdesk.png stdout 2>/dev/null | grep -Eo '[0-9]{9}' | head -1 > /tmp/rustdesk_id.txt
+          echo "RUSTDESK_ID=$(cat /tmp/rustdesk_id.txt)" >> $GITHUB_ENV
 
-      - name: Grant Screen Recording permission to RustDesk (AppleScript)
-        run: |
-          sudo -u vncuser osascript <<'APPLESCRIPT'
-            -- Function to delay and retry clicking
-            on clickButton(buttonName, windowTitle)
-              repeat 10 times
-                try
-                  tell application "System Events"
-                    tell process "System Settings"
-                      set frontmost to true
-                      if exists (first button of first window whose title contains windowTitle) then
-                        click (first button of first window whose title contains windowTitle)
-                        return true
-                      end if
-                    end tell
-                  end tell
-                on error
-                  delay 1
-                end try
-              end repeat
-              return false
-            end clickButton
-
-            -- Step 1: Click the "Configure" button in RustDesk main window
-            tell application "System Events"
-              tell process "RustDesk"
-                set frontmost to true
-                delay 2
-                try
-                  click (first button of window 1 whose title is "Configure")
-                on error
-                  -- If button not found, try clicking at approximate position
-                  do shell script "sudo -u vncuser cliclick c:200,300"
-                end try
-              end tell
-            end tell
-            delay 3
-
-            -- Step 2: In the system dialog, click "Open System Settings"
-            tell application "System Events"
-              -- Look for a window titled "Screen Recording" and click its default button
-              try
-                set srWindow to (first window whose title contains "Screen Recording")
-                click (first button of srWindow whose title is "Open System Settings")
-              on error
-                -- Fallback: use cliclick
-                do shell script "sudo -u vncuser cliclick c:400,300"
-              end try
-            end tell
-            delay 5
-
-            -- Step 3: Open Screen Recording pane directly (in case the click didn't work)
-            do shell script "open 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenRecording'"
-            delay 5
-
-            -- Step 4: Enable the switch for RustDesk
-            tell application "System Events"
-              tell process "System Settings"
-                set frontmost to true
-                delay 3
-                -- Find the table containing apps
-                try
-                  set mainTable to table 1 of scroll area 1 of window 1
-                  -- Loop through rows to find one containing "RustDesk"
-                  repeat with aRow in (every row of mainTable)
-                    try
-                      if value of static text 1 of aRow is "RustDesk" then
-                        -- Click the checkbox in that row
-                        click checkbox 1 of aRow
-                        exit repeat
-                      end if
-                    end try
-                  end repeat
-                on error err
-                  -- If table navigation fails, fallback to clicking at estimated position
-                  do shell script "sudo -u vncuser cliclick c:700,200"
-                end try
-              end tell
-            end tell
-            delay 3
-
-            -- Step 5: Handle password prompt if it appears
-            tell application "System Events"
-              try
-                set pwWindow to (first window whose title contains "Privacy & Security" or description contains "password")
-                keystroke "Apple@123"
-                delay 1
-                click (first button of pwWindow whose title is "Modify Settings")
-              end try
-            end tell
-            delay 5
-
-            -- Step 6: Handle "Quit & Reopen" dialog
-            tell application "System Events"
-              try
-                set quitWindow to (first window whose title contains "RustDesk" and description contains "quit")
-                click (first button of quitWindow whose title contains "Quit")
-              end try
-            end tell
-            delay 10
-          APPLESCRIPT
-          echo "✅ Permission grant attempted"
-
-      - name: Wait for RustDesk to restart and take screenshot
-        run: |
-          # Bring RustDesk to front
-          sudo -u vncuser osascript -e 'tell application "System Events" to tell process "RustDesk" to set frontmost to true' 2>/dev/null || true
-          sleep 5
-          # Take screenshot (now that RustDesk has permission, screencapture should work)
-          sudo -u vncuser screencapture -x /tmp/rustdesk_screen.png
-          echo "✅ Screenshot captured"
-
-      - name: Extract ID and password from screenshot
-        run: |
-          cd /tmp
-          tesseract rustdesk_screen.png stdout -l eng 2>/dev/null > rustdesk_text.txt
-          echo "=== RUSTDESK CREDENTIALS ==="
-          RUSTDESK_ID=$(grep -Eo '[0-9]{9}' rustdesk_text.txt | head -1)
-          RUSTDESK_PASS=$(grep -Eo '[A-Za-z0-9]{6,8}' rustdesk_text.txt | tail -1)
-          if [ -n "$RUSTDESK_ID" ]; then
-            echo "✅ RustDesk ID: $RUSTDESK_ID"
-          else
-            echo "❌ Could not extract ID. Full OCR text:"
-            cat rustdesk_text.txt
-          fi
-          if [ -n "$RUSTDESK_PASS" ]; then
-            echo "✅ Password: $RUSTDESK_PASS"
-          else
-            echo "❌ Could not extract password. Full OCR text:"
-            cat rustdesk_text.txt
-          fi
-          echo "RUSTDESK_ID=$RUSTDESK_ID" >> $GITHUB_ENV
-          echo "RUSTDESK_PASS=$RUSTDESK_PASS" >> $GITHUB_ENV
-
-      - name: Upload screenshot for manual verification
+      - name: Upload screenshot
         uses: actions/upload-artifact@v4
         with:
-          name: rustdesk-screenshot
-          path: /tmp/rustdesk_screen.png
-          if-no-files-found: ignore
+          name: rustdesk-credentials
+          path: /tmp/rustdesk.png
 
-      - name: Upload OCR text for debugging
-        uses: actions/upload-artifact@v4
-        with:
-          name: rustdesk-ocr-text
-          path: /tmp/rustdesk_text.txt
-          if-no-files-found: ignore
-
-      - name: Display connection info and keep alive
+      - name: Keep alive
         run: |
-          echo "========================================================="
-          echo "✅ RUSTDESK READY"
-          echo "========================================================="
+          echo "=================================================="
           echo "RustDesk ID: ${{ env.RUSTDESK_ID }}"
-          echo "Password:    ${{ env.RUSTDESK_PASS }}"
-          echo ""
-          echo "📱 ANDROID CONNECTION:"
-          echo "   1. Install 'RustDesk' from Google Play Store"
-          echo "   2. Enter the ID above"
-          echo "   3. When prompted, enter the password"
-          echo "   4. You will see the macOS desktop!"
-          echo ""
-          echo "🌐 Tailscale IP (if needed): ${{ env.TAILSCALE_IP }}"
-          echo ""
-          echo "⏳ Job will stay alive for 6 hours. If OCR failed, download the screenshot artifact."
-          echo "========================================================="
+          echo "Password: (check the RustDesk window)"
+          echo "Tailscale IP: ${{ env.TAILSCALE_IP }}"
+          echo "=================================================="
           while true; do sleep 3600; done
