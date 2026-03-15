@@ -1,17 +1,16 @@
-name: macOS GUI (DeepLink Direct)
+name: macOS GUI (DeepLink Automated)
 on: workflow_dispatch
 
 jobs:
   gui:
     runs-on: macos-latest
     steps:
-      - name: Install Tailscale (optional, for secure access)
+      - name: Install Tailscale (optional)
         run: |
           brew install tailscale
           sudo tailscaled --tun=userspace-networking &
           sleep 5
           sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=github-macos-deeplink || true
-          # Wait for IP and save it (even if Tailscale fails, we proceed)
           for i in {1..5}; do
             IP=$(sudo tailscale ip -4 2>/dev/null || echo "unknown")
             if [ "$IP" != "unknown" ]; then
@@ -21,7 +20,7 @@ jobs:
             sleep 5
           done
 
-      - name: Create user vncuser with known password
+      - name: Create user vncuser with password Apple@123
         run: |
           sudo dscl . -create /Users/vncuser
           sudo dscl . -create /Users/vncuser UserShell /bin/bash
@@ -34,9 +33,9 @@ jobs:
           sudo createhomedir -c -u vncuser
           echo "✅ Created user: vncuser (password: Apple@123)"
 
-      - name: Install dependencies (cliclick, tesseract)
+      - name: Install dependencies (cliclick, tesseract, imagemagick)
         run: |
-          brew install cliclick tesseract
+          brew install cliclick tesseract imagemagick
 
       - name: Download DeepLink .dmg
         run: |
@@ -50,38 +49,60 @@ jobs:
           hdiutil detach "/Volumes/DeepLink"
           echo "✅ DeepLink installed to /Applications"
 
-      - name: Launch DeepLink and capture credentials
+      - name: Launch DeepLink and wait for full load
         run: |
-          # Launch the app as vncuser
           sudo -u vncuser open /Applications/DeepLink.app
-          sleep 15  # Wait for app to fully load
+          echo "Waiting 60 seconds for DeepLink to fully initialize..."
+          sleep 60
 
-          # Bring DeepLink to front and click the eye button to reveal password
+      - name: Navigate to Remote Control tab and reveal password
+        run: |
+          # Use AppleScript to click the "Remote Control" tab and then the eye button
           sudo -u vncuser osascript <<'APPLESCRIPT' || true
             tell application "System Events"
               tell process "DeepLink"
                 set frontmost to true
                 delay 2
-                -- Click the eye button (second button from left? Let's click by position)
+                -- Click on the "Remote Control" tab (assuming it's a button or radio button)
                 try
-                  click button 2 of window 1
+                  click (first button of window 1 whose name contains "Remote Control")
+                on error
+                  -- Fallback: try clicking by position (if name not found)
+                  click at {200, 100} -- approximate coordinates; adjust if needed
+                end try
+                delay 3
+                -- Now click the eye button to reveal password
+                -- The eye button is likely a button with no text, so we click by position
+                -- Assuming the eye is near the password field (e.g., right side)
+                -- Let's try a few candidate positions
+                try
+                  -- First attempt: look for a button with description "eye"
+                  click (first button of window 1 whose description contains "eye")
+                on error
+                  -- Fallback: click at a relative position (adjust based on screenshot)
+                  click at {400, 300}
                 end try
               end tell
             end tell
           APPLESCRIPT
-          sleep 3
+          echo "✅ Attempted to click Remote Control tab and eye button"
+          sleep 5
 
+      - name: Capture screenshot and extract credentials
+        run: |
           # Take a screenshot of the whole screen
           sudo -u vncuser screencapture -x /tmp/deeplink_screen.png
 
           # Use OCR to extract Device ID and password
-          # Crop to the area where they appear (approximately top half of screen)
-          # For simplicity, we'll OCR the entire image and grep for patterns
           cd /tmp
-          tesseract deeplink_screen.png stdout -l eng 2>/dev/null > deeplink_text.txt
+          # Enhance image for better OCR
+          convert deeplink_screen.png -colorspace Gray -contrast -sharpen 0x1 enhanced.png
+          tesseract enhanced.png stdout -l eng 2>/dev/null > deeplink_text.txt
 
           echo "=== DEEPLINK CREDENTIALS ==="
+          # Look for a 9-digit number (Device ID)
           DEVICE_ID=$(grep -Eo '[0-9]{9}' deeplink_text.txt | head -1)
+          # Look for a password: likely 6+ alphanumeric characters (might be mixed case)
           PASSWORD=$(grep -Eo '[A-Za-z0-9]{6,}' deeplink_text.txt | tail -1)
 
           if [ -n "$DEVICE_ID" ]; then
@@ -98,11 +119,11 @@ jobs:
             cat deeplink_text.txt
           fi
 
-          # Save to environment for later steps
+          # Save to environment
           echo "DEEPLINK_ID=$DEVICE_ID" >> $GITHUB_ENV
           echo "DEEPLINK_PASS=$PASSWORD" >> $GITHUB_ENV
 
-      - name: Upload screenshot for manual verification (if OCR fails)
+      - name: Upload screenshot for manual verification
         uses: actions/upload-artifact@v4
         with:
           name: deeplink-screenshot
@@ -123,7 +144,7 @@ jobs:
           echo "   3. Enter the Device ID and Password above"
           echo "   4. You will see the macOS desktop instantly!"
           echo ""
-          echo "🌐 Tailscale IP (if needed for other purposes): ${{ env.TAILSCALE_IP }}"
+          echo "🌐 Tailscale IP (if needed): ${{ env.TAILSCALE_IP }}"
           echo ""
           echo "⏳ Job will stay alive for 6 hours. If OCR failed, download the screenshot artifact."
           echo "========================================================="
