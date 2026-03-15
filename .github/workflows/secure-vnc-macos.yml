@@ -1,4 +1,4 @@
-name: Secure VNC (macOS Tailscale Remote Desktop) - Fixed Password + 7hr Timeout
+name: Secure VNC (macOS Tailscale Remote Desktop) - Official Action + 7hr
 
 on:
   workflow_dispatch:
@@ -6,21 +6,18 @@ on:
 jobs:
   secure-vnc:
     runs-on: macos-latest
-    timeout-minutes: 420          # ← 25200 seconds = 7 hours exactly
+    timeout-minutes: 420          # 25200 seconds = 7 hours
 
     steps:
       - name: Create VNC User with Fixed Password
         run: |
-          # Fixed password as requested (no random generation)
           password="Apple@123"
           
-          # Create Skyro user (admin)
           sudo sysadminctl -addUser Skyro \
             -password "$password" \
             -fullName "Skyro" \
             -admin
           
-          # Add to admin group explicitly
           sudo dscl . -append /Groups/admin GroupMembership Skyro
           
           echo "VNC_USER=Skyro" >> $GITHUB_ENV
@@ -33,9 +30,8 @@ jobs:
           
           echo "✅ Skyro user created with password: Apple@123"
 
-      - name: Configure Screen Sharing (VNC) + Set Password
+      - name: Configure Screen Sharing (VNC)
         run: |
-          # Enable Screen Sharing (VNC) with the fixed password
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -activate \
             -configure \
@@ -46,46 +42,21 @@ jobs:
             -clientopts -setvncpw -vncpw "${{ env.VNC_PASSWORD }}" \
             -restart -agent
           
-          echo "✅ Screen Sharing (VNC on port 5900) enabled for user Skyro"
+          echo "✅ Screen Sharing (VNC on port 5900) enabled"
 
-      - name: Install Tailscale
-        run: |
-          TS_PKG="Tailscale-latest-macos.pkg"
-          curl -LO "https://pkgs.tailscale.com/stable/${TS_PKG}"
-          sudo installer -pkg "${TS_PKG}" -target /
-          rm -f "${TS_PKG}"
-          
-          # Verify CLI is available
-          if [[ ! -x "/Applications/Tailscale.app/Contents/MacOS/Tailscale" ]]; then
-              echo "Tailscale installation failed"
-              exit 1
-          fi
-          echo "✅ Tailscale installed"
+      - name: Connect Tailscale (Official GitHub Action)
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          tags: tag:gh-runner-macos          # ← Required. Create this tag in your Tailscale ACL if you use restrictions
+          statedir: /tmp/tailscale-state     # Safe for all setups (required only with Tailnet Lock)
 
-      - name: Establish Tailscale Connection
+      - name: Set Hostname + Get Tailscale IP
         run: |
-          CLI="/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+          # Optional but nice - matches your original Windows workflow
+          tailscale set --hostname=gh-runner-macos-$GITHUB_RUN_ID
           
-          # Bring up Tailscale
-          "$CLI" up \
-            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} \
-            --hostname=gh-runner-macos-$GITHUB_RUN_ID
-          
-          # Wait for IP
-          TS_IP=""
-          for i in {1..10}; do
-              TS_IP=$("$CLI" ip -4)
-              if [[ -n "$TS_IP" ]]; then
-                  break
-              fi
-              sleep 5
-          done
-          
-          if [[ -z "$TS_IP" ]]; then
-              echo "Tailscale IP not assigned"
-              exit 1
-          fi
-          
+          TS_IP=$(tailscale ip -4)
           echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
           echo "✅ Tailscale IP: $TS_IP"
 
@@ -93,7 +64,6 @@ jobs:
         run: |
           echo "Tailscale IP: ${{ env.TAILSCALE_IP }}"
           
-          # Test port 5900 (VNC) is reachable
           if ! nc -z -w 5 "${{ env.TAILSCALE_IP }}" 5900; then
               echo "TCP connection to VNC port 5900 failed"
               exit 1
@@ -105,13 +75,13 @@ jobs:
           echo ""
           echo "=== VNC ACCESS ==="
           echo "Address: vnc://${{ env.TAILSCALE_IP }}:5900"
-          echo "VNC Password: ${{ env.VNC_PASSWORD }}   ← Apple@123"
-          echo "User (if prompted): ${{ env.VNC_USER }}"
+          echo "VNC Password: Apple@123"
+          echo "User (if prompted): Skyro"
           echo "=================="
           echo ""
-          echo "Use ANY VNC client (Screen Sharing on Mac, RealVNC on Windows, etc.)"
+          echo "Connect with ANY VNC client (macOS Screen Sharing, RealVNC Viewer, bVNC, etc.)"
           
-          # Keep runner alive for the full 7 hours
+          # Keep alive for full 7 hours
           while true; do
               echo "[$(date)] VNC Active - Use Ctrl+C in workflow to terminate"
               sleep 300
