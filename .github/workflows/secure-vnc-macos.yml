@@ -1,28 +1,27 @@
-name: macOS GUI (AskLink Direct Install)
+name: macOS GUI (DeepLink Direct)
 on: workflow_dispatch
 
 jobs:
   gui:
     runs-on: macos-latest
     steps:
-
-      - name: Install Tailscale
+      - name: Install Tailscale (optional, for secure access)
         run: |
           brew install tailscale
           sudo tailscaled --tun=userspace-networking &
           sleep 5
-          sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=github-macos-asklink
-          for i in {1..10}; do
-            IP=$(sudo tailscale ip -4 2>/dev/null || true)
-            if [ -n "$IP" ]; then
+          sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=github-macos-deeplink || true
+          # Wait for IP and save it (even if Tailscale fails, we proceed)
+          for i in {1..5}; do
+            IP=$(sudo tailscale ip -4 2>/dev/null || echo "unknown")
+            if [ "$IP" != "unknown" ]; then
               echo "TAILSCALE_IP=$IP" >> $GITHUB_ENV
-              echo "✅ Tailscale IP: $IP"
               break
             fi
             sleep 5
           done
 
-      - name: Create user vncuser with password Apple@123
+      - name: Create user vncuser with known password
         run: |
           sudo dscl . -create /Users/vncuser
           sudo dscl . -create /Users/vncuser UserShell /bin/bash
@@ -35,52 +34,97 @@ jobs:
           sudo createhomedir -c -u vncuser
           echo "✅ Created user: vncuser (password: Apple@123)"
 
-      - name: Download and Install AskLink (official)
+      - name: Install dependencies (cliclick, tesseract)
         run: |
-          # Scrape the AskLink macOS download link from the official AskLink site
-          DOWNLOAD_URL=$(curl -s https://www.asklink.com/en/download | grep -oE 'https://.*AskLink.*?\\.dmg' | head -n1)
+          brew install cliclick tesseract
 
-          echo "Downloading AskLink DMG..."
-          curl -L "$DOWNLOAD_URL" -o /tmp/AskLink.dmg
-
-          echo "Mounting AskLink installer..."
-          hdiutil attach /tmp/AskLink.dmg -nobrowse -quiet
-          cp -R "/Volumes/AskLink/AskLink.app" /Applications/
-          hdiutil detach "/Volumes/AskLink" -quiet
-
-          echo "✅ AskLink installed to /Applications"
-
-      - name: Launch AskLink as vncuser
+      - name: Download DeepLink .dmg
         run: |
-          sudo -u vncuser open -a /Applications/AskLink.app
-          sleep 15
-          echo "✅ AskLink launched - wait for the app to initialize"
+          curl -L -o /tmp/deeplink.dmg "https://pub-1b47391b45ed418d8a02bf732d2f944a.r2.dev/deeplink_arm64.dmg"
+          echo "✅ Download complete"
 
-      - name: Capture screenshot of current desktop
+      - name: Install DeepLink
         run: |
-          sudo -u runner screencapture -x /tmp/desktop.png
-          echo "Screenshot saved to /tmp/desktop.png"
+          hdiutil attach /tmp/deeplink.dmg -nobrowse -mountpoint /Volumes/DeepLink
+          cp -R "/Volumes/DeepLink/DeepLink.app" /Applications/
+          hdiutil detach "/Volumes/DeepLink"
+          echo "✅ DeepLink installed to /Applications"
 
-      - name: Upload screenshot as artifact
+      - name: Launch DeepLink and capture credentials
+        run: |
+          # Launch the app as vncuser
+          sudo -u vncuser open /Applications/DeepLink.app
+          sleep 15  # Wait for app to fully load
+
+          # Bring DeepLink to front and click the eye button to reveal password
+          sudo -u vncuser osascript <<'APPLESCRIPT' || true
+            tell application "System Events"
+              tell process "DeepLink"
+                set frontmost to true
+                delay 2
+                -- Click the eye button (second button from left? Let's click by position)
+                try
+                  click button 2 of window 1
+                end try
+              end tell
+            end tell
+          APPLESCRIPT
+          sleep 3
+
+          # Take a screenshot of the whole screen
+          sudo -u vncuser screencapture -x /tmp/deeplink_screen.png
+
+          # Use OCR to extract Device ID and password
+          # Crop to the area where they appear (approximately top half of screen)
+          # For simplicity, we'll OCR the entire image and grep for patterns
+          cd /tmp
+          tesseract deeplink_screen.png stdout -l eng 2>/dev/null > deeplink_text.txt
+
+          echo "=== DEEPLINK CREDENTIALS ==="
+          DEVICE_ID=$(grep -Eo '[0-9]{9}' deeplink_text.txt | head -1)
+          PASSWORD=$(grep -Eo '[A-Za-z0-9]{6,}' deeplink_text.txt | tail -1)
+
+          if [ -n "$DEVICE_ID" ]; then
+            echo "✅ Device ID: $DEVICE_ID"
+          else
+            echo "❌ Could not extract Device ID. See full OCR text below:"
+            cat deeplink_text.txt
+          fi
+
+          if [ -n "$PASSWORD" ]; then
+            echo "✅ Password: $PASSWORD"
+          else
+            echo "❌ Could not extract password. Full OCR text:"
+            cat deeplink_text.txt
+          fi
+
+          # Save to environment for later steps
+          echo "DEEPLINK_ID=$DEVICE_ID" >> $GITHUB_ENV
+          echo "DEEPLINK_PASS=$PASSWORD" >> $GITHUB_ENV
+
+      - name: Upload screenshot for manual verification (if OCR fails)
         uses: actions/upload-artifact@v4
         with:
-          name: desktop-screenshot
-          path: /tmp/desktop.png
+          name: deeplink-screenshot
+          path: /tmp/deeplink_screen.png
+          if-no-files-found: ignore
 
       - name: Display connection info and keep alive
         run: |
           echo "========================================================="
-          echo "✅ DIAGNOSTIC RUN COMPLETE"
+          echo "✅ DEEPLINK READY"
           echo "========================================================="
-          echo "Tailscale IP: ${{ env.TAILSCALE_IP }}"
+          echo "DeepLink Device ID: ${{ env.DEEPLINK_ID }}"
+          echo "DeepLink Password:  ${{ env.DEEPLINK_PASS }}"
           echo ""
-          echo "🔹 ASKLINK (recommended):"
-          echo "   ✓ AskLink is installed and running under vncuser"
-          echo "   ✓ On Android/iOS, install AskLink and use the ID shown on the runner"
-          echo "   ✓ The app will display a 9‑digit connection ID you can use to connect"
+          echo "📱 ANDROID CONNECTION:"
+          echo "   1. Install 'DeepLink' from Google Play Store"
+          echo "   2. Open the app and tap 'Remote Control'"
+          echo "   3. Enter the Device ID and Password above"
+          echo "   4. You will see the macOS desktop instantly!"
           echo ""
-          echo "📸 Screenshot artifact available on this run page"
+          echo "🌐 Tailscale IP (if needed for other purposes): ${{ env.TAILSCALE_IP }}"
           echo ""
-          echo "⏳ Job will stay alive for 6 hours to allow connections."
+          echo "⏳ Job will stay alive for 6 hours. If OCR failed, download the screenshot artifact."
           echo "========================================================="
           while true; do sleep 3600; done
