@@ -19,7 +19,7 @@ jobs:
           sudo dscl . -create /Users/vncuser NFSHomeDirectory /Users/vncuser
           sudo dscl . -passwd /Users/vncuser "Apple@123"
           sudo dscl . -append /Groups/admin GroupMembership vncuser
-          sudo createhomedir -c -u vncuser > /dev/null
+          sudo createhomedir -c -u vncuser
           echo "✅ User: vncuser / Apple@123"
 
       - name: Install deps
@@ -39,114 +39,77 @@ jobs:
           echo "Waiting 25 seconds..."
           sleep 25
 
-      # ============ STEP 1: Click Configure ============
       - name: STEP 1 - Click Configure
         run: |
           echo "=== RustDesk Window ==="
           sudo -u vncuser screencapture -x /tmp/step1.png
           tesseract /tmp/step1.png stdout 2>/dev/null | head -15
-          
-          # Click Configure button (center-bottom of window)
           sudo -u vncuser cliclick c:400,520
           echo "✅ Clicked Configure"
           sleep 5
 
-      # ============ STEP 2: Click Open System Settings ============
       - name: STEP 2 - Click Open System Settings
         run: |
           echo "=== Permission Popup ==="
           sudo -u vncuser screencapture -x /tmp/step2.png
           tesseract /tmp/step2.png stdout 2>/dev/null | head -15
-          
-          # "Open System Settings" is the GRAY button on LEFT
-          # "Deny" is the BLUE button on RIGHT
-          # Click on left side for Open System Settings
           sudo -u vncuser cliclick c:320,480
           echo "✅ Clicked Open System Settings"
-          
-          # Wait for System Settings to fully open
-          echo "Waiting 15 seconds for System Settings to open..."
+          echo "Waiting 15 seconds for System Settings..."
           sleep 15
-
-      # ============ STEP 3: Enable RustDesk ============
-      - name: STEP 3 - Screenshot System Settings
-        run: |
-          sudo -u vncuser screencapture -x /tmp/step3_before.png
-          echo "=== System Settings (Screen Recording) ==="
-          tesseract /tmp/step3_before.png stdout 2>/dev/null | head -25
 
       - name: STEP 3 - Click RustDesk Switch
         run: |
-          # The switch is on the RIGHT side of the RustDesk row
-          # Try clicking at multiple Y positions on the right edge
-          echo "Clicking switch positions..."
-          
+          sudo -u vncuser screencapture -x /tmp/step3.png
+          echo "=== System Settings ==="
+          tesseract /tmp/step3.png stdout 2>/dev/null | head -25
           for y in 300 340 380 420; do
             echo "Trying y=$y"
             sudo -u vncuser cliclick c:720,$y
             sleep 1
           done
-          
           echo "✅ Clicked switch positions"
           sleep 5
 
-      # ============ STEP 4: Handle Password Popup ============
-      - name: STEP 4 - Handle Password
+      - name: STEP 4 - Enter Password
         run: |
-          echo "=== Checking for Password Popup ==="
+          echo "=== Password Popup ==="
           sudo -u vncuser screencapture -x /tmp/step4.png
           tesseract /tmp/step4.png stdout 2>/dev/null | head -10
-          
-          # If password popup appeared, type password
-          # The password field should already be focused
+          # Type password (this was working before)
           sudo -u vncuser osascript -e 'tell application "System Events" to keystroke "Apple@123"'
           sleep 1
           sudo -u vncuser osascript -e 'tell application "System Events" to keystroke return'
-          
           echo "✅ Entered password"
           sleep 5
 
-      # ============ STEP 5: Handle Quit & Reopen ============
-      - name: STEP 5 - Handle Quit Dialog
+      - name: STEP 5 - Click Quit & Reopen
         run: |
-          echo "=== Checking for Quit Dialog ==="
+          echo "=== Quit Dialog ==="
           sudo -u vncuser screencapture -x /tmp/step5.png
           tesseract /tmp/step5.png stdout 2>/dev/null | head -10
-          
-          # Click Quit & Reopen if it appears
           sudo -u vncuser cliclick c:400,450
-          echo "✅ Handled Quit dialog"
-          sleep 15
+          echo "✅ Clicked Quit & Reopen"
+          sleep 20
 
-      # ============ FINAL: Screenshot of RustDesk Only ============
-      - name: Final - Screenshot RustDesk Window
+      - name: Final - Restart RustDesk and Screenshot
         run: |
-          # Kill and restart RustDesk to make sure it fresh
+          # Kill RustDesk
           sudo -u vncuser killall RustDesk 2>/dev/null || true
           sleep 3
+          
+          # Start fresh
           sudo -u vncuser open /Applications/RustDesk.app
           echo "Waiting 25 seconds for RustDesk..."
           sleep 25
           
-          # Take screenshot of ONLY the RustDesk window
-          sudo -u vncuser osascript <<'EOF'
-            tell application "System Events"
-              tell process "RustDesk"
-                set frontmost to true
-                delay 1
-                -- Get window bounds
-                set winPos to position of window 1
-                set winSize to size of window 1
-                set x to item 1 of winPos
-                set y to item 2 of winPos
-                set w to item 1 of winSize
-                set h to item 2 of winSize
-                -- Capture just the RustDesk window
-                do shell script "screencapture -R -l -x," & x & "," & y & "," & w & "," & h & " & " -x /tmp/rustdesk_window.png"
-              end tell
-          EOF
+          # Bring to front
+          sudo -u vncuser osascript -e 'tell application "RustDesk" to activate' 2>/dev/null || true
+          sleep 2
           
-          echo "✅ RustDesk window screenshot saved to /tmp/rustdesk_window.png"
+          # SIMPLE SCREENSHOT - just works!
+          sudo -u vncuser screencapture /tmp/rustdesk_window.png
+          echo "✅ Screenshot saved to /tmp/rustdesk_window.png"
 
       - name: Upload Screenshot
         uses: actions/upload-artifact@v4
@@ -157,16 +120,20 @@ jobs:
       - name: Done
         run: |
           echo ""
-          echo "╔══════════════════════════════════════════════════════════════╗"
-          echo "║  📸 DOWNLOAD 'rustdesk-id' ARTIFACT                          ║"
-          echo "║     Open the PNG to see ID and Password!              ║"
-          echo "╠══════════════════════════════════════════════════════════════╣"
-          echo "║  📱 ANDroid: Install 'RustDesk' from Play Store            ║"
-          echo "║     Open app → Enter ID → Connect → Enter Password         ║"
-          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo "╔══════════════════════════════════════════════════════════╗"
+          echo "║  📸 DOWNLOAD 'rustdesk-id' ARTIFACT BELOW                ║"
+          echo "║     Open PNG to see ID and Password on LEFT side         ║"
+          echo "╠══════════════════════════════════════════════════════════╣"
+          echo "║  📱 Android: Install 'RustDesk' from Play Store          ║"
+          echo "║     → Open app                                           ║"
+          echo "║     → Enter ID from screenshot                           ║"
+          echo "║     → Tap Connect                                        ║"
+          echo "║     → Enter Password from screenshot                     ║"
+          echo "║     → Done! You see macOS GUI! 🎉                        ║"
+          echo "╚══════════════════════════════════════════════════════════╝"
           echo ""
           
           while true; do
-            echo "[$(date)] Session active - Download screenshot to connect!"
+            echo "[$(date)] Session active"
             sleep 3600
           done
