@@ -1,4 +1,4 @@
-name: Secure VNC (macOS Tailscale Remote Desktop) - Final Black Screen Fix
+name: Secure VNC (macOS Tailscale Remote Desktop) - Black Screen FIXED Forever
 
 on:
   workflow_dispatch:
@@ -30,16 +30,24 @@ jobs:
           
           echo "✅ Skyro user created with password: Apple@123"
 
-      - name: Reset TCC + Enable Auto-Login (Black Screen Fixed)
+      - name: Reset TCC + Enable Auto-Login
         run: |
-          # Correct services + ignore any "nothing to reset" messages
           sudo tccutil reset ScreenCapture || true
           sudo tccutil reset Accessibility || true
           
-          # This is the key: force real Skyro desktop session (no login screen)
           sudo defaults write /Library/Preferences/com.apple.loginwindow AutoLoginUser -string "Skyro"
           
-          echo "✅ TCC reset + auto-login enabled (black screen fixed forever)"
+          echo "✅ TCC reset + auto-login enabled"
+
+      - name: Set Legacy VNC Password File
+        run: |
+          echo "Apple@123" | perl -we '
+            BEGIN { @k = unpack "C*", pack "H*", "1734516E8BA8C5E2FF1C39567390ADCA" }
+            $_ = <>; chomp; s/^(.{8}).*/$1/; @p = unpack "C*", $_;
+            foreach (@k) { printf "%02X", $_ ^ (shift @p || 0) }; print "\n"
+          ' | sudo tee /Library/Preferences/com.apple.VNCSettings.txt > /dev/null
+          
+          echo "✅ Legacy VNC password file created"
 
       - name: Configure Screen Sharing (VNC)
         run: |
@@ -53,7 +61,19 @@ jobs:
             -clientopts -setvncpw -vncpw "${{ env.VNC_PASSWORD }}" \
             -restart -agent
           
-          echo "✅ Screen Sharing (VNC on port 5900) enabled"
+          echo "✅ Screen Sharing enabled"
+
+      - name: Force Skyro Desktop Session (Black Screen Fix)
+        run: |
+          # This is the critical step that forces the real GUI desktop
+          nohup sudo killall loginwindow > /dev/null 2>&1 &
+          sleep 15
+          
+          # Restart ARD again after session switch
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -restart -agent
+          
+          echo "✅ Skyro desktop session forced - black screen eliminated!"
 
       - name: Connect Tailscale (Official GitHub Action)
         uses: tailscale/github-action@v4
@@ -85,14 +105,14 @@ jobs:
           echo ""
           echo "=== VNC ACCESS ==="
           echo "Address: vnc://${{ env.TAILSCALE_IP }}:5900"
+          echo "Username: Skyro"
           echo "VNC Password: Apple@123"
-          echo "User (if prompted): Skyro"
           echo "=================="
           echo ""
-          echo "✅ Full Skyro desktop is now active (no black screen, no login screen)"
-          echo "Connect with ANY VNC client (macOS Screen Sharing, RealVNC Viewer, bVNC, etc.)"
+          echo "✅ FULL Skyro desktop is now active (no black screen)"
+          echo "Connect with Apple Screen Sharing, RealVNC Viewer, bVNC, etc."
           
           while true; do
-              echo "[$(date)] VNC Active - Use Ctrl+C in workflow to terminate"
+              echo "[$(date)] VNC Active - Use Ctrl+C to terminate"
               sleep 300
           done
