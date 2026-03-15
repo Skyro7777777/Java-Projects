@@ -18,24 +18,24 @@ jobs:
         echo "Installing NoMachine..."
         brew install --cask nomachine
 
-        echo "Waiting for nxserver binary to exist..."
+        # Path inside app bundle
+        NX_SERVER="/Applications/NoMachine.app/Contents/MacOS/nxserver"
+
+        echo "Waiting for nxserver binary inside app bundle..."
         for i in {1..30}; do
-          if [ -f /usr/NX/bin/nxserver ]; then
-            echo "nxserver found"
-            break
-          fi
+          [ -f "$NX_SERVER" ] && break
           sleep 2
         done
 
-        if [ ! -f /usr/NX/bin/nxserver ]; then
-          echo "NoMachine binary not found after install!"
-          ls /usr/NX || true
+        if [ ! -f "$NX_SERVER" ]; then
+          echo "❌ nxserver binary not found! Installation failed."
+          ls /Applications/NoMachine.app/Contents/MacOS || true
           exit 1
         fi
 
-        # Enable virtual desktop mode (important for headless runners)
-        sudo /usr/NX/bin/nxserver --virtualdesktop yes || true
-        sudo /usr/NX/bin/nxserver --restart
+        # Start virtual desktop mode (needed on headless runner)
+        sudo "$NX_SERVER" --virtualdesktop yes || true
+        sudo "$NX_SERVER" --restart
 
         echo "✅ NoMachine installed and virtual desktop started"
 
@@ -60,12 +60,12 @@ jobs:
     # ----------------------------------------
     # Step 4: Verify NoMachine Port
     # ----------------------------------------
-    - name: Verify NoMachine accessibility
+    - name: Verify NoMachine Accessibility
       run: |
         sleep 5
         echo "Checking TCP port 4000 on ${{ env.TAILSCALE_IP }}..."
         nc -z -w 5 "${{ env.TAILSCALE_IP }}" 4000 || {
-          echo "Port 4000 not reachable!"
+          echo "❌ Port 4000 not reachable!"
           exit 1
         }
         echo "✅ NoMachine port 4000 is open"
