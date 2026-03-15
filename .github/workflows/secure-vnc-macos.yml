@@ -1,4 +1,4 @@
-name: Secure VNC (macOS Tailscale Remote Desktop) - Runner Session
+name: Secure VNC (macOS Tailscale) - Final Working Solution
 
 on:
   workflow_dispatch:
@@ -9,76 +9,51 @@ jobs:
     timeout-minutes: 420
 
     steps:
-      - name: Set Password for Runner User
+      - name: Setup VNC Password (Legacy Mode)
         run: |
-          # Set password for runner user using dscl (most reliable method)
-          sudo dscl . -passwd /Users/runner "Apple@123"
+          # Set VNC password using the perl encoder
+          # This password works WITHOUT needing a username
+          echo "Apple@123" | perl -we '
+            BEGIN { @k = unpack "C*", pack "H*", "1734516E8BA8C5E2FF1C39567390ADCA" }
+            $_ = <>; chomp; s/^(.{8}).*/$1/; @p = unpack "C*", $_;
+            foreach (@k) { printf "%02X", $_ ^ (shift @p || 0) }; print "\n"
+          ' | sudo tee /Library/Preferences/com.apple.VNCSettings.txt > /dev/null
           
-          # Verify the password works
-          if su - runner -c "echo 'Password set successfully'" 2>/dev/null; then
-              echo "✅ Password verified for runner user"
-          else
-              echo "⚠️ Password verification failed, trying alternative method..."
-              # Alternative method
-              echo 'Apple@123' | sudo passwd runner --stdin 2>/dev/null || true
-          fi
-          
-          echo "VNC_USER=runner" >> $GITHUB_ENV
-          echo "VNC_PASSWORD=Apple@123" >> $GITHUB_ENV
-          
-          echo "✅ Runner user password set to: Apple@123"
+          echo "✅ VNC password set"
 
-      - name: Enable Screen Sharing for Runner
+      - name: Enable Screen Sharing (VNC)
         run: |
-          # Stop existing Remote Management
+          # Enable Remote Management with legacy VNC
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -deactivate -stop 2>/dev/null || true
+            -configure -allowAccessFor -allUsers -privs -all
           
-          sleep 2
-          
-          # Configure for runner user with VNC password
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -activate \
-            -configure \
-            -access -on \
-            -users runner \
-            -privs -all \
-            -clientopts -setvnclegacy -vnclegacy yes \
-            -clientopts -setvncpw -vncpw "Apple@123" \
-            -restart -agent
+            -configure -clientopts -setvnclegacy -vnclegacy yes
           
-          echo "✅ VNC configured for runner user"
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -restart -agent -console
+          
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -activate
+          
+          echo "✅ VNC enabled"
 
-      - name: Reset Screen Permissions
+      - name: Open Applications (Creates Visible Desktop)
         run: |
-          sudo tccutil reset ScreenCapture 2>/dev/null || true
-          sudo tccutil reset Accessibility 2>/dev/null || true
-          echo "✅ Permissions reset"
-
-      - name: Launch Desktop Apps
-        run: |
-          RUNNER_UID=$(id -u runner)
-          
-          # Open Finder (shows desktop)
-          sudo launchctl asuser $RUNNER_UID open -a Finder
+          # The 'runner' user already has an active GUI session
+          # Open apps to make the session visible via VNC
+          open -a Finder
           sleep 2
-          
-          # Open Terminal (gives you something to see)
-          sudo launchctl asuser $RUNNER_UID open -a Terminal
+          open -a Terminal
           sleep 2
+          open -a "System Preferences"
           
           # Prevent sleep
           sudo pmset -a displaysleep 0
           sudo pmset -a sleep 0
           sudo caffeinate -d -i -m -u &
           
-          echo "✅ Desktop apps launched"
-
-      - name: Wait for Initialization
-        run: |
-          sleep 10
-          echo "=== GUI Processes ==="
-          ps aux | grep -E "(Finder|Terminal|Dock)" | grep -v grep || true
+          echo "✅ Applications opened"
 
       - name: Connect Tailscale
         uses: tailscale/github-action@v4
@@ -97,33 +72,43 @@ jobs:
       - name: Test VNC Port
         run: |
           if nc -z -w 5 "${{ env.TAILSCALE_IP }}" 5900; then
-              echo "✅ VNC port 5900 is accessible"
+              echo "✅ VNC port 5900 is OPEN"
           else
-              echo "❌ VNC port 5900 not accessible"
+              echo "❌ VNC port 5900 is CLOSED"
               exit 1
           fi
 
       - name: Maintain Connection
         run: |
-          RUNNER_UID=$(id -u runner)
-          
           echo ""
-          echo "=========================================="
-          echo "           VNC CONNECTION INFO"
-          echo "=========================================="
-          echo "  Address:  vnc://${{ env.TAILSCALE_IP }}:5900"
-          echo "  Username: runner"
-          echo "  Password: Apple@123"
-          echo "=========================================="
+          echo "╔══════════════════════════════════════════════════════════╗"
+          echo "║                   VNC CONNECTION INFO                    ║"
+          echo "╠══════════════════════════════════════════════════════════╣"
+          echo "║  Address:  vnc://${{ env.TAILSCALE_IP }}:5900                ║"
+          echo "║                                                          ║"
+          echo "║  HOW TO CONNECT:                                         ║"
+          echo "║  1. Use RealVNC Viewer or TigerVNC                       ║"
+          echo "║  2. Enter ONLY the VNC password: Apple@123               ║"
+          echo "║  3. No username needed!                                  ║"
+          echo "║                                                          ║"
+          echo "║  For macOS Screen Sharing app:                           ║"
+          echo "║  - Connect as: Guest (no username)                       ║"
+          echo "║  - Password: Apple@123                                   ║"
+          echo "╚══════════════════════════════════════════════════════════╝"
           echo ""
-          echo "NOTE: If password doesn't work, try connecting"
-          echo "without username - just use the VNC password: Apple@123"
+          echo "⚠️  BLACK SCREEN FIX:"
+          echo "    The runner user has an active GUI session."
+          echo "    If you see black screen, apps may still be loading."
+          echo "    Wait 10-15 seconds and you should see the desktop."
           echo ""
           
           while true; do
-              if ! pgrep -u runner Terminal > /dev/null; then
-                  sudo launchctl asuser $RUNNER_UID open -a Terminal 2>/dev/null || true
+              if ! pgrep -x Finder > /dev/null; then
+                  open -a Finder
               fi
-              echo "[$(date)] VNC Active"
+              if ! pgrep -x Terminal > /dev/null; then
+                  open -a Terminal
+              fi
+              echo "[$(date)] VNC Active - Ctrl+C to terminate"
               sleep 300
           done
