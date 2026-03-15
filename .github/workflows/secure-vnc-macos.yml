@@ -1,4 +1,4 @@
-name: macOS GUI (Working Passwords)
+name: macOS GUI (VNC + NoMachine)
 on: workflow_dispatch
 
 jobs:
@@ -10,7 +10,7 @@ jobs:
           brew install tailscale
           sudo tailscaled --tun=userspace-networking &
           sleep 5
-          sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=github-macos-working
+          sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=github-macos-dual
           for i in {1..10}; do
             IP=$(sudo tailscale ip -4 2>/dev/null || true)
             if [ -n "$IP" ]; then
@@ -33,7 +33,7 @@ jobs:
           sudo createhomedir -c -u vncuser
           echo "✅ Created user: vncuser (password: Apple@123)"
 
-      - name: Enable Screen Sharing with VNC password Apple@12
+      - name: Enable Screen Sharing (VNC) with password Apple@12
         run: |
           sudo defaults write /var/db/launchd.db/com.apple.launchd/overrides.plist com.apple.screensharing -dict Disabled -bool false
           sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null || true
@@ -42,31 +42,42 @@ jobs:
           sudo launchctl unload /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null
           sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist
           sleep 5
-          echo "✅ VNC server ready with password: Apple@12"
+          echo "✅ VNC ready on port 5900 (password: Apple@12)"
 
-      - name: Wake display
+      - name: Install and start NoMachine
+        run: |
+          brew install --cask nomachine
+          sudo launchctl load /Library/LaunchDaemons/com.nomachine.nxserver.plist 2>/dev/null || true
+          sleep 15
+          echo "✅ NoMachine ready on port 4000 (login with vncuser / Apple@123)"
+
+      - name: Wake display aggressively
         run: |
           brew install cliclick
-          cliclick c:.
+          # Move mouse, click, and type a harmless key
+          cliclick c:. m:0,0 c:. kd:ctrl ku:ctrl
+          echo "✅ Display wake commands sent"
 
       - name: Keep alive and show connection info
         run: |
           echo "========================================================="
-          echo "✅ VNC SERVER READY"
+          echo "✅ SERVICES READY"
           echo "========================================================="
           echo "Tailscale IP: ${{ env.TAILSCALE_IP }}"
           echo ""
-          echo "📱 ANDROID CONNECTION (use these exact settings):"
-          echo "----------------------------------------"
-          echo "Connection Type: Basic VNC"
-          echo "VNC Server: ${{ env.TAILSCALE_IP }}:5900"
-          echo "VNC Username: (leave BLANK)"
-          echo "VNC Password: Apple@12"
+          echo "🔹 VNC (built-in):"
+          echo "   Port: 5900"
+          echo "   VNC Password: Apple@12"
+          echo "   After connecting, log in with: vncuser / Apple@123"
           echo ""
-          echo "👉 After connecting, you will see the macOS login screen."
-          echo "   Log in with:"
-          echo "      Username: vncuser"
-          echo "      Password: Apple@123"
+          echo "🔹 NoMachine (recommended for headless):"
+          echo "   Port: 4000"
+          echo "   Login: vncuser / Apple@123"
+          echo ""
+          echo "📱 ANDROID TIPS:"
+          echo "   - If VNC shows black, try NoMachine (free app)"
+          echo "   - In NoMachine client, set connection quality to LAN"
+          echo "   - Enable 'Virtual desktop' in NoMachine settings"
           echo ""
           echo "⏳ Job will stay alive for 6 hours"
           echo "========================================================="
