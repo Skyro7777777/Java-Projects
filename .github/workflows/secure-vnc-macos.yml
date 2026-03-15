@@ -1,114 +1,87 @@
-name: Secure VNC (macOS Tailscale) - Final Working Solution
+name: Secure NoMachine (macOS Tailscale Remote Desktop) - True RDP Alternative
 
 on:
   workflow_dispatch:
 
 jobs:
-  secure-vnc:
+  secure-nomachine:
     runs-on: macos-latest
-    timeout-minutes: 420
+    timeout-minutes: 420          # 25200 seconds = 7 hours
 
     steps:
-      - name: Setup VNC Password (Legacy Mode)
+      - name: Create Admin User with Fixed Password
         run: |
-          # Set VNC password using the perl encoder
-          # This password works WITHOUT needing a username
-          echo "Apple@123" | perl -we '
-            BEGIN { @k = unpack "C*", pack "H*", "1734516E8BA8C5E2FF1C39567390ADCA" }
-            $_ = <>; chomp; s/^(.{8}).*/$1/; @p = unpack "C*", $_;
-            foreach (@k) { printf "%02X", $_ ^ (shift @p || 0) }; print "\n"
-          ' | sudo tee /Library/Preferences/com.apple.VNCSettings.txt > /dev/null
+          password="Apple@123"
           
-          echo "✅ VNC password set"
+          sudo sysadminctl -addUser Skyro \
+            -password "$password" \
+            -fullName "Skyro" \
+            -admin
+          
+          sudo dscl . -append /Groups/admin GroupMembership Skyro
+          
+          echo "NM_USER=Skyro" >> $GITHUB_ENV
+          echo "NM_PASSWORD=$password" >> $GITHUB_ENV
+          
+          if ! id Skyro &>/dev/null; then
+              echo "User creation failed"
+              exit 1
+          fi
+          
+          echo "✅ Skyro admin user created with password: Apple@123"
 
-      - name: Enable Screen Sharing (VNC)
+      - name: Install NoMachine Server (True RDP-like GUI)
         run: |
-          # Enable Remote Management with legacy VNC
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -configure -allowAccessFor -allUsers -privs -all
+          # Latest free version (update URL from https://www.nomachine.com/download if needed)
+          curl -L -o nomachine.pkg "https://downloads.nomachine.com/download/?id=7&platform=mac"
           
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -configure -clientopts -setvnclegacy -vnclegacy yes
+          sudo installer -pkg nomachine.pkg -target /
+          rm -f nomachine.pkg
           
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -restart -agent -console
+          # Start the service
+          sudo /usr/NX/bin/nxserver --restart || true
           
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -activate
-          
-          echo "✅ VNC enabled"
+          echo "✅ NoMachine installed and running (port 4000)"
 
-      - name: Open Applications (Creates Visible Desktop)
-        run: |
-          # The 'runner' user already has an active GUI session
-          # Open apps to make the session visible via VNC
-          open -a Finder
-          sleep 2
-          open -a Terminal
-          sleep 2
-          open -a "System Preferences"
-          
-          # Prevent sleep
-          sudo pmset -a displaysleep 0
-          sudo pmset -a sleep 0
-          sudo caffeinate -d -i -m -u &
-          
-          echo "✅ Applications opened"
-
-      - name: Connect Tailscale
+      - name: Connect Tailscale (Official Action)
         uses: tailscale/github-action@v4
         with:
           authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
           tags: tag:gh-runner-macos
           statedir: /tmp/tailscale-state
 
-      - name: Get Tailscale IP
+      - name: Set Hostname + Get Tailscale IP
         run: |
           tailscale set --hostname=gh-runner-macos-$GITHUB_RUN_ID
+          
           TS_IP=$(tailscale ip -4)
           echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
           echo "✅ Tailscale IP: $TS_IP"
 
-      - name: Test VNC Port
+      - name: Verify NoMachine Accessibility
         run: |
-          if nc -z -w 5 "${{ env.TAILSCALE_IP }}" 5900; then
-              echo "✅ VNC port 5900 is OPEN"
-          else
-              echo "❌ VNC port 5900 is CLOSED"
+          echo "Tailscale IP: ${{ env.TAILSCALE_IP }}"
+          
+          if ! nc -z -w 5 "${{ env.TAILSCALE_IP }}" 4000; then
+              echo "TCP connection to NoMachine port 4000 failed"
               exit 1
           fi
+          echo "✅ TCP connectivity successful!"
 
       - name: Maintain Connection
         run: |
           echo ""
-          echo "╔══════════════════════════════════════════════════════════╗"
-          echo "║                   VNC CONNECTION INFO                    ║"
-          echo "╠══════════════════════════════════════════════════════════╣"
-          echo "║  Address:  vnc://${{ env.TAILSCALE_IP }}:5900                ║"
-          echo "║                                                          ║"
-          echo "║  HOW TO CONNECT:                                         ║"
-          echo "║  1. Use RealVNC Viewer or TigerVNC                       ║"
-          echo "║  2. Enter ONLY the VNC password: Apple@123               ║"
-          echo "║  3. No username needed!                                  ║"
-          echo "║                                                          ║"
-          echo "║  For macOS Screen Sharing app:                           ║"
-          echo "║  - Connect as: Guest (no username)                       ║"
-          echo "║  - Password: Apple@123                                   ║"
-          echo "╚══════════════════════════════════════════════════════════╝"
+          echo "=== NoMachine ACCESS (True RDP replacement) ==="
+          echo "Address: ${{ env.TAILSCALE_IP }}:4000"
+          echo "Username: Skyro"
+          echo "Password: Apple@123"
+          echo "=================="
           echo ""
-          echo "⚠️  BLACK SCREEN FIX:"
-          echo "    The runner user has an active GUI session."
-          echo "    If you see black screen, apps may still be loading."
-          echo "    Wait 10-15 seconds and you should see the desktop."
-          echo ""
+          echo "✅ Download FREE NoMachine client (Windows/Android/macOS): https://www.nomachine.com/download"
+          echo "Connect → enter the IP above → Username + Password"
+          echo "You will get a full Skyro desktop (no black screen ever)"
           
           while true; do
-              if ! pgrep -x Finder > /dev/null; then
-                  open -a Finder
-              fi
-              if ! pgrep -x Terminal > /dev/null; then
-                  open -a Terminal
-              fi
-              echo "[$(date)] VNC Active - Ctrl+C to terminate"
+              echo "[$(date)] NoMachine Active - Use Ctrl+C to terminate"
               sleep 300
           done
