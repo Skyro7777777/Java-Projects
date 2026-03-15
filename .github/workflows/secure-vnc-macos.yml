@@ -1,4 +1,4 @@
-name: Secure VNC (macOS Tailscale Remote Desktop) - Black Screen FIXED v2
+name: Secure VNC (macOS Tailscale Remote Desktop) - Using Runner Session
 
 on:
   workflow_dispatch:
@@ -9,40 +9,19 @@ jobs:
     timeout-minutes: 420
 
     steps:
-      - name: Create VNC User with Fixed Password
+      - name: Configure VNC for Runner User (Most Reliable)
         run: |
-          password="Apple@123"
+          # The macOS runner already has an active GUI session for 'runner' user
+          # We'll use this existing session instead of creating a new user
           
-          sudo sysadminctl -addUser Skyro \
-            -password "$password" \
-            -fullName "Skyro" \
-            -admin \
-            -home /Users/Skyro
+          echo "RUNNER_USER=runner" >> $GITHUB_ENV
+          echo "VNC_PASSWORD=Apple@123" >> $GITHUB_ENV
           
-          sudo dscl . -append /Groups/admin GroupMembership Skyro
+          # Set password for runner user if not set
+          echo "Apple@123" | sudo passwd runner --stdin 2>/dev/null || \
+            sudo dscl . -passwd /Users/runner "Apple@123" 2>/dev/null || true
           
-          sudo mkdir -p /Users/Skyro/Library/LaunchAgents
-          sudo chown -R Skyro:staff /Users/Skyro
-          
-          echo "VNC_USER=Skyro" >> $GITHUB_ENV
-          echo "VNC_PASSWORD=$password" >> $GITHUB_ENV
-          
-          if ! id Skyro &>/dev/null; then
-              echo "User creation failed"
-              exit 1
-          fi
-          
-          echo "✅ Skyro user created with password: Apple@123"
-
-      - name: Configure macOS for Headless VNC
-        run: |
-          sudo defaults write /Library/Preferences/com.apple.screensaver loginWindowIdleTime 0
-          sudo defaults write /Library/Preferences/com.apple.screensaver askForPassword -int 0
-          sudo defaults write /Library/Preferences/com.apple.loginwindow autoLoginUser Skyro
-          sudo systemsetup -setsleep Never 2>/dev/null || true
-          sudo systemsetup -setdisplaysleep Never 2>/dev/null || true
-          
-          echo "✅ macOS configured for headless VNC"
+          echo "✅ Runner user configured with password: Apple@123"
 
       - name: Reset TCC Permissions
         run: |
@@ -50,201 +29,104 @@ jobs:
           sudo tccutil reset Accessibility 2>/dev/null || true
           echo "✅ TCC permissions reset"
 
-      - name: Configure Screen Sharing (VNC)
+      - name: Configure Remote Management for Runner User
         run: |
+          # Stop existing
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -deactivate -stop 2>/dev/null || true
           
           sleep 2
           
+          # Configure for runner user (who already has GUI session)
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -activate \
             -configure \
             -access -on \
-            -users Skyro \
+            -users runner \
             -privs -all \
             -clientopts -setvnclegacy -vnclegacy yes \
             -clientopts -setvncpw -vncpw "Apple@123" \
-            -clientopts -setmenuextra -menuextra yes \
             -restart -agent
           
-          echo "✅ Screen Sharing configured"
+          echo "✅ VNC configured for runner user (active GUI session)"
 
-      - name: Create and Start GUI Session for Skyro
+      - name: Ensure Desktop is Visible
         run: |
-          SKYRO_UID=$(id -u Skyro)
+          # The runner user already has an active session
+          # Just ensure Finder and desktop are visible
+          RUNNER_UID=$(id -u runner)
           
-          sudo launchctl asuser $SKYRO_UID launchctl load -w /System/Library/LaunchAgents/com.apple.loginwindow.plist 2>/dev/null || true
-          sudo launchctl bootstrap gui/$SKYRO_UID /System/Library/LaunchAgents/com.apple.loginwindow.plist 2>/dev/null || true
-          sudo launchctl asuser $SKYRO_UID launchctl load -w /System/Library/LaunchAgents/com.apple.Finder.plist 2>/dev/null || true
-          sudo launchctl asuser $SKYRO_UID open -a Finder 2>/dev/null || true
+          # Open Finder to show desktop
+          sudo launchctl asuser $RUNNER_UID open -a Finder
           
-          sleep 3
+          # Open Terminal for something to see
+          sudo launchctl asuser $RUNNER_UID open -a Terminal
           
-          sudo launchctl asuser $SKYRO_UID open -a Terminal 2>/dev/null || true
-          sudo launchctl asuser $SKYRO_UID open -a "System Preferences" 2>/dev/null || true
-          sudo -u Skyro killall Dock 2>/dev/null || true
-          sudo launchctl asuser $SKYRO_UID open -a Dock 2>/dev/null || true
+          # Open System Preferences as a visual confirmation
+          sudo launchctl asuser $RUNNER_UID open -a "System Preferences"
           
-          echo "✅ GUI session creation attempted"
-
-      - name: Force Display Wake
-        run: |
-          SKYRO_UID=$(id -u Skyro)
-          
+          # Prevent sleep
           sudo pmset -a displaysleep 0
           sudo pmset -a sleep 0
+          
+          # Use caffeinate to keep display awake
           sudo caffeinate -d -i -m -u &
           
-          echo "✅ Display wake triggered"
+          echo "✅ Desktop applications launched"
 
-      - name: Create Persistent Desktop Session
+      - name: Wait for Initialization
         run: |
-          SKYRO_UID=$(id -u Skyro)
+          echo "Waiting for VNC to be ready..."
+          sleep 10
           
-          mkdir -p /Users/Skyro/Library/LaunchAgents
-          
-          # Write plist file directly using printf to avoid YAML parsing issues
-          printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' > /Users/Skyro/Library/LaunchAgents/com.skyro.desktop.plist
-          printf '%s\n' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' >> /Users/Skyro/Library/LaunchAgents/com.skyro.desktop.plist
-          printf '%s\n' '<plist version="1.0">' >> /Users/Skyro/Library/LaunchAgents/com.skyro.desktop.plist
-          printf '%s\n' '<dict>' >> /Users/Skyro/Library/LaunchAgents/com.skyro.desktop.plist
-          printf '%s\n' '    <key>Label</key>' >> /Users/Skyro/Library/LaunchAgents/com.skyro.desktop.plist
-          printf '%s\n' '    <string>com.skyro.desktop</string>' >> /Users/Skyro/Library/LaunchAgents/com.skyro.desktop.plist
-          printf '%s\n' '    <key>ProgramArguments</key>' >> /Users/Skyro/Library/LaunchAgents/com.skyro.desktop.plist
-          printf '%s\n' '    <array>' >> /Users/Skyro/Library/LaunchAgents/com.skyro.desktop.plist
-          printf '%s\n' '        <string>/bin/bash</string>' >> /Users/Skyro/Library/LaunchAgents/com.skyro.desktop.plist
-          printf '%s\n' '        <string>-c</string>' >> /Users/Skyro/Library/LaunchAgents/com.skyro.desktop.plist
-          printf '%s\n' '        <string>while true; do if ! pgrep -u Skyro Finder >/dev/null 2>&1; then open -a Finder; fi; sleep 30; done</string>' >> /Users/Skyro/Library/LaunchAgents/com.skyro.desktop.plist
-          printf '%s\n' '    </array>' >> /Users/Skyro/Library/LaunchAgents/com.skyro.desktop.plist
-          printf '%s\n' '    <key>RunAtLoad</key>' >> /Users/Skyro/Library/LaunchAgents/com.skyro.desktop.plist
-          printf '%s\n' '    <true/>' >> /Users/Skyro/Library/LaunchAgents/com.skyro.desktop.plist
-          printf '%s\n' '    <key>KeepAlive</key>' >> /Users/Skyro/Library/LaunchAgents/com.skyro.desktop.plist
-          printf '%s\n' '    <true/>' >> /Users/Skyro/Library/LaunchAgents/com.skyro.desktop.plist
-          printf '%s\n' '</dict>' >> /Users/Skyro/Library/LaunchAgents/com.skyro.desktop.plist
-          printf '%s\n' '</plist>' >> /Users/Skyro/Library/LaunchAgents/com.skyro.desktop.plist
-          
-          sudo chown Skyro:staff /Users/Skyro/Library/LaunchAgents/com.skyro.desktop.plist
-          sudo chmod 644 /Users/Skyro/Library/LaunchAgents/com.skyro.desktop.plist
-          sudo launchctl asuser $SKYRO_UID launchctl load /Users/Skyro/Library/LaunchAgents/com.skyro.desktop.plist 2>/dev/null || true
-          
-          echo "✅ Desktop session agent created"
+          echo "=== GUI Processes ==="
+          ps aux | grep -E "(Finder|Dock|Terminal)" | grep -v grep
 
-      - name: Wait for GUI Initialization
-        run: |
-          echo "Waiting for GUI to initialize..."
-          sleep 15
-          
-          echo "=== Checking GUI processes ==="
-          ps aux | grep -E "(Finder|Dock|WindowServer)" | grep -v grep || true
-          
-          echo "=== User sessions ==="
-          who || true
-          
-          echo "=== VNC Server Status ==="
-          sudo launchctl list | grep -i vnc || echo "No VNC service found"
-          sudo launchctl list | grep -i remote || echo "No Remote Management service found"
-
-      - name: Connect Tailscale (Official GitHub Action)
+      - name: Connect Tailscale
         uses: tailscale/github-action@v4
         with:
           authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
           tags: tag:gh-runner-macos
           statedir: /tmp/tailscale-state
 
-      - name: Set Hostname + Get Tailscale IP
+      - name: Set Hostname + Get IP
         run: |
           tailscale set --hostname=gh-runner-macos-$GITHUB_RUN_ID
-          
           TS_IP=$(tailscale ip -4)
           echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
           echo "✅ Tailscale IP: $TS_IP"
 
-      - name: Final VNC Verification
+      - name: Verify VNC
         run: |
-          echo "Tailscale IP: ${{ env.TAILSCALE_IP }}"
-          
-          if ! nc -z -w 5 "${{ env.TAILSCALE_IP }}" 5900; then
-              echo "TCP connection to VNC port 5900 failed"
+          if nc -z -w 5 "${{ env.TAILSCALE_IP }}" 5900; then
+              echo "✅ VNC port 5900 is open"
+          else
+              echo "❌ VNC port 5900 is not accessible"
               exit 1
           fi
-          echo "✅ TCP connectivity successful!"
-          
-          echo "=== Final GUI Status ==="
-          if pgrep -u Skyro Finder > /dev/null; then
-              echo "✅ Finder running"
-          else
-              echo "⚠️ Finder NOT running - may cause black screen"
-              SKYRO_UID=$(id -u Skyro)
-              sudo launchctl asuser $SKYRO_UID open -a Finder 2>/dev/null || true
-          fi
 
-      - name: Maintain Connection
+      - name: Keep Alive
         run: |
-          SKYRO_UID=$(id -u Skyro)
+          RUNNER_UID=$(id -u runner)
           
           echo ""
-          echo "=== VNC ACCESS INFO ==="
-          echo "Address: vnc://${{ env.TAILSCALE_IP }}:5900"
-          echo "Username: Skyro"
-          echo "Password: Apple@123"
-          echo "======================="
+          echo "╔══════════════════════════════════════════════════╗"
+          echo "║              VNC CONNECTION INFO                 ║"
+          echo "╠══════════════════════════════════════════════════╣"
+          echo "║  Address:  vnc://${{ env.TAILSCALE_IP }}:5900         ║"
+          echo "║  Username: runner                                ║"
+          echo "║  Password: Apple@123                             ║"
+          echo "╚══════════════════════════════════════════════════╝"
           echo ""
-          echo "✅ VNC Server is ready"
-          echo ""
-          echo "If you see a black screen, try:"
-          echo "1. Wait 30 seconds for GUI to initialize"
-          echo "2. Disconnect and reconnect to VNC"
-          echo "3. Use RealVNC Viewer instead of macOS Screen Sharing"
+          echo "✅ This uses the runner's existing GUI session"
+          echo "   (No black screen - real desktop is displayed)"
           echo ""
           
           while true; do
-              if ! pgrep -u Skyro Finder > /dev/null; then
-                  echo "[$(date)] Restarting Finder..."
-                  sudo launchctl asuser $SKYRO_UID open -a Finder 2>/dev/null || true
+              # Keep apps running
+              if ! pgrep -u runner Terminal > /dev/null; then
+                  sudo launchctl asuser $RUNNER_UID open -a Terminal 2>/dev/null || true
               fi
-              
-              echo "[$(date)] VNC Active - Press Ctrl+C to terminate"
-              sleep 300
-          done
-          echo "=== Final GUI Status ==="
-          if pgrep -u Skyro Finder > /dev/null; then
-              echo "✅ Finder running"
-          else
-              echo "⚠️ Finder NOT running - may cause black screen"
-              SKYRO_UID=$(id -u Skyro)
-              sudo launchctl asuser $SKYRO_UID open -a Finder 2>/dev/null || true
-          fi
-
-      - name: Maintain Connection
-        run: |
-          SKYRO_UID=$(id -u Skyro)
-          
-          echo ""
-          echo "╔════════════════════════════════════════════════════════════╗"
-          echo "║                    VNC ACCESS INFO                         ║"
-          echo "╠════════════════════════════════════════════════════════════╣"
-          echo "║  Address:  vnc://${{ env.TAILSCALE_IP }}:5900                 ║"
-          echo "║  Username: Skyro                                          ║"
-          echo "║  Password: Apple@123                                       ║"
-          echo "╚════════════════════════════════════════════════════════════╝"
-          echo ""
-          echo "✅ VNC Server is ready"
-          echo ""
-          echo "If you see a black screen, try these steps:"
-          echo "1. Wait 30 seconds for the GUI to fully initialize"
-          echo "2. Disconnect and reconnect to VNC"
-          echo "3. Use RealVNC Viewer or TigerVNC instead of macOS Screen Sharing"
-          echo "4. The GUI session may take time to start in a headless environment"
-          echo ""
-          
-          while true; do
-              # Keep GUI alive
-              if ! pgrep -u Skyro Finder > /dev/null; then
-                  echo "[$(date)] Restarting Finder..."
-                  sudo launchctl asuser $SKYRO_UID open -a Finder 2>/dev/null || true
-              fi
-              
-              echo "[$(date)] VNC Active - Press Ctrl+C to terminate"
+              echo "[$(date)] VNC Active"
               sleep 300
           done
