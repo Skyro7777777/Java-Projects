@@ -6,7 +6,7 @@ on:
 jobs:
   secure-nomachine:
     runs-on: macos-latest
-    timeout-minutes: 420          # 25200 seconds = 7 hours
+    timeout-minutes: 420          # 7 hours
 
     steps:
       - name: Create Admin User with Fixed Password
@@ -30,25 +30,17 @@ jobs:
           
           echo "✅ Skyro admin user created with password: Apple@123"
 
-      - name: Install NoMachine Server (True RDP-like GUI)
+      - name: Install NoMachine Server
         run: |
-          # Download latest DMG with proper User-Agent (fixes the 162-byte HTML error)
-          curl -L -J -O -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" \
-            "https://downloads.nomachine.com/download/?id=7&platform=mac"
+          # Homebrew cask installs latest version reliably (9.3.7+ as of 2026)
+          brew install --cask nomachine
           
-          # Mount DMG and install (official CLI method from NoMachine KB)
-          DMG=$(ls nomachine_*.dmg)
-          MOUNT=$(hdiutil attach -nobrowse "$DMG" | grep Volumes | awk '{print $NF}')
-          sudo installer -pkg "$MOUNT/NoMachine.pkg" -target /
-          hdiutil detach "$MOUNT" -force
-          rm -f "$DMG"
-          
-          # Start NoMachine server
+          # Start/restart NoMachine server (official method)
           sudo /usr/NX/bin/nxserver --restart || true
           
           echo "✅ NoMachine installed and running (port 4000)"
 
-      - name: Connect Tailscale (Official Action)
+      - name: Connect Tailscale
         uses: tailscale/github-action@v4
         with:
           authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
@@ -76,19 +68,19 @@ jobs:
       - name: Maintain Connection
         run: |
           echo ""
-          echo "=== NoMachine ACCESS (Exact Windows RDP equivalent) ==="
+          echo "=== NoMachine ACCESS (Windows RDP equivalent) ==="
           echo "Address: ${{ env.TAILSCALE_IP }}:4000"
           echo "Username: Skyro"
           echo "Password: Apple@123"
           echo "=================="
           echo ""
-          echo "✅ Download FREE NoMachine client (any platform):"
+          echo "Download FREE NoMachine client:"
           echo "https://www.nomachine.com/download"
           echo ""
-          echo "Connect → choose 'NoMachine' connection type → enter the IP above"
-          echo "You will get a full Skyro desktop (virtual session, no black screen)"
+          echo "Connect → 'NoMachine' protocol → enter IP above"
+          echo "You get full virtual desktop session"
           
           while true; do
-              echo "[$(date)] NoMachine Active - Use Ctrl+C to terminate"
+              echo "[$(date)] NoMachine Active - Ctrl+C to stop"
               sleep 300
           done
