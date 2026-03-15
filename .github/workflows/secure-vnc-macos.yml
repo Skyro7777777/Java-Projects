@@ -1,53 +1,55 @@
-name: macOS GUI via Tailscale & VNC
+name: macOS GUI (Tailscale + VNC)
 on: workflow_dispatch
 
 jobs:
   gui:
     runs-on: macos-latest
     steps:
-      - name: Install Tailscale
+      - name: Install and connect Tailscale
         run: |
           brew install tailscale
           sudo tailscaled --tun=userspace-networking &
           sleep 5
           sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=github-macos
-          # Wait for Tailscale IP
+          # Wait for IP and save it
           for i in {1..10}; do
             IP=$(sudo tailscale ip -4 2>/dev/null || true)
             if [ -n "$IP" ]; then
-              echo "Tailscale IP: $IP"
+              echo "TAILSCALE_IP=$IP" >> $GITHUB_ENV
+              echo "✅ Tailscale IP: $IP"
               break
             fi
             sleep 5
           done
 
-      - name: Enable Screen Sharing (VNC)
+      - name: Enable Screen Sharing (VNC) with password Apple@123
         run: |
           # Enable the VNC server
           sudo defaults write /var/db/launchd.db/com.apple.launchd/overrides.plist com.apple.screensharing -dict Disabled -bool false
           sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist
 
-          # Set VNC password (max 8 characters!)
-          VNC_PASS="yourvnc"  # change this
+          # ⚠️ VNC passwords must be ≤8 characters. "Apple@123" is 9 chars – if it fails, use "Apple@12" instead.
+          VNC_PASS="Apple@123"   # Change to "Apple@12" if needed
           echo "$VNC_PASS" | sudo tee /etc/vncpasswd > /dev/null
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -activate -configure -access -off -restart -agent -privs -all \
             -allowAccessFor -allUsers -setVNCPassword -vncpasswd /etc/vncpasswd
 
-      - name: Create a dummy graphical session
+      - name: Force a dummy graphical session
         run: |
-          # The trick: launch an app that requires a GUI – this forces WindowServer to start.
-          # Even if it fails initially, the attempt may trigger a graphical context.
-          # We'll run it in the background.
+          # Try to open Terminal – this may kickstart WindowServer
           nohup open -a Terminal.app > /tmp/open.log 2>&1 &
-          # Give it time to launch
           sleep 10
 
-      - name: Keep workflow alive (prevents auto‑close)
+      - name: Display connection info and keep alive
         run: |
-          echo "Session is ready. Connect via VNC to your Tailscale IP:5900"
-          echo "Job will stay alive for 6 hours (GitHub limit)."
-          # Infinite loop to keep the job running
+          echo "=========================================="
+          echo "✅ VNC server is running on port 5900"
+          echo "🌐 Connect using: vnc://${{ env.TAILSCALE_IP }}:5900"
+          echo "🔑 Password: Apple@123 (if that fails, try Apple@12)"
+          echo "⏳ Job will stay alive for up to 6 hours (GitHub limit)"
+          echo "=========================================="
+          # Infinite loop to prevent job from exiting
           while true; do
             sleep 3600
           done
