@@ -1,4 +1,4 @@
-name: macOS GUI (RustDesk - Improved Apple Automation)
+name: macOS GUI (RustDesk - Aggressive Click Strategy)
 
 on:
   workflow_dispatch:
@@ -20,7 +20,7 @@ jobs:
           sudo dscl . -passwd /Users/vncuser "Apple@123"
           sudo dscl . -append /Groups/admin GroupMembership vncuser
           sudo createhomedir -c -u vncuser
-          echo "✅ Created user: vncuser (password: Apple@123)"
+          echo "✅ User created: vncuser / Apple@123"
 
       - name: Install dependencies
         run: |
@@ -37,117 +37,82 @@ jobs:
       - name: Launch RustDesk
         run: |
           sudo -u vncuser open /Applications/RustDesk.app
-          echo "Waiting for RustDesk to initialize..."
-          sleep 15
+          sleep 20
 
-      # === IMPROVED: Use AppleScript to find and click Configure button ===
-      - name: Click Configure Button (Smart Detection)
+      # ====== STEP 1: Click Configure ======
+      - name: Click Configure Button
         run: |
-          sudo -u vncuser osascript <<'APPLESCRIPT'
-            set maxAttempts to 10
-            
-            repeat with attempt from 1 to maxAttempts
-              tell application "System Events"
-                set frontmost of process "RustDesk" to true
-                delay 1
-                
-                tell process "RustDesk"
-                  -- Get all windows
-                  set allWindows to every window
-                  
-                  repeat with win in allWindows
-                    try
-                      -- Look for "Configure" button by checking all UI elements
-                      set allButtons to every button of win
-                      repeat with btn in allButtons
-                        set btnTitle to name of btn
-                        if btnTitle contains "Configure" or btnTitle contains "configure" then
-                          click btn
-                          return "Clicked Configure button"
-                        end if
-                      end repeat
-                      
-                      -- Also check for clickable areas that might be the configure button
-                      set allGroups to every group of win
-                      repeat with grp in allGroups
-                        try
-                          set grpDesc to description of grp
-                          if grpDesc contains "Configure" then
-                            click grp
-                            return "Clicked Configure group"
-                          end if
-                        end try
-                      end repeat
-                      
-                    end try
-                  end repeat
-                end tell
-              end tell
-              
-              delay 2
-            end repeat
-            
-            -- Fallback: Click at known position based on macOS window layout
-            tell application "System Events"
-              tell process "RustDesk"
-                set winPos to position of window 1
-                set winSize to size of window 1
-                -- Configure button is typically in the center-bottom of the window
-                set clickX to (item 1 of winPos) + (item 1 of winSize) / 2
-                set clickY to (item 2 of winPos) + (item 2 of winSize) - 100
-              end tell
-            end tell
-            do shell script "sudo -u vncuser cliclick c:" & (clickX as integer) & "," & (clickY as integer)
-          APPLESCRIPT
+          sudo -u vncuser osascript -e 'tell application "System Events" to tell process "RustDesk" to set frontmost to true'
+          sleep 2
           
-          echo "✅ Attempted to click Configure"
+          # Get screen dimensions and click in center-bottom of window
+          SCREEN_SIZE=$(sudo -u vncuser osascript -e 'tell application "System Events" to get size of window 1 of process "RustDesk"')
+          WIN_POS=$(sudo -u vncuser osascript -e 'tell application "System Events" to get position of window 1 of process "RustDesk"')
+          
+          echo "Window size: $SCREEN_SIZE"
+          echo "Window position: $WIN_POS"
+          
+          # Parse and calculate click position
+          WIN_W=$(echo $SCREEN_SIZE | cut -d',' -f1)
+          WIN_H=$(echo $SCREEN_SIZE | cut -d',' -f2)
+          WIN_X=$(echo $WIN_POS | cut -d',' -f1)
+          WIN_Y=$(echo $WIN_POS | cut -d',' -f2)
+          
+          # Configure is at center-bottom
+          CLICK_X=$((WIN_X + WIN_W / 2))
+          CLICK_Y=$((WIN_Y + WIN_H - 80))
+          
+          echo "Clicking Configure at: $CLICK_X, $CLICK_Y"
+          sudo -u vncuser cliclick c:$CLICK_X,$CLICK_Y
           sleep 5
 
-      # === IMPROVED: Detect and handle permission dialog ===
-      - name: Handle Screen Recording Permission Dialog
+      # ====== STEP 2: Click Open System Settings ======
+      - name: Click Open System Settings
         run: |
+          sudo -u vncuser screencapture -x /tmp/popup.png
+          tesseract /tmp/popup.png stdout 2>/dev/null | head -20
+          
+          # The "Open System Settings" button is GRAY (left), "Deny" is BLUE (right)
+          # Click on the LEFT side of the dialog
           sudo -u vncuser osascript <<'APPLESCRIPT'
-            set userPassword to "Apple@123"
-            
             tell application "System Events"
-              -- Wait for permission dialog
-              delay 3
-              
-              -- Check for SecurityAgent process (handles permission dialogs)
+              delay 2
               if exists process "SecurityAgent" then
                 tell process "SecurityAgent"
                   set frontmost to true
                   delay 1
                   
-                  -- Look for "Open System Settings" or similar button
+                  -- Get dialog dimensions
                   try
-                    set allWindows to every window
-                    repeat with win in allWindows
-                      -- Get all buttons in the dialog
-                      set allButtons to every button of win
-                      repeat with btn in allButtons
-                        set btnTitle to name of btn
-                        if btnTitle contains "Open" or btnTitle contains "Settings" or btnTitle contains "System" then
-                          click btn
-                          return "Clicked Open System Settings"
-                        end if
-                      end repeat
-                    end repeat
+                    set winSize to size of window 1
+                    set winPos to position of window 1
+                    set winW to item 1 of winSize
+                    set winH to item 2 of winSize
+                    set winX to item 1 of winPos
+                    set winY to item 2 of winPos
+                    
+                    -- Open System Settings is on LEFT side of bottom buttons
+                    -- Calculate center of left button
+                    set clickX to winX + (winW / 2) - 80
+                    set clickY to winY + winH - 50
+                    
+                    do shell script "sudo -u vncuser cliclick c:" & (clickX as integer) & "," & (clickY as integer)
                   end try
                 end tell
               end if
-              
-              -- Fallback: Direct open System Settings
-              do shell script "open 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenRecording'"
             end tell
           APPLESCRIPT
           
-          echo "✅ Permission dialog handled"
-          sleep 5
+          echo "✅ Clicked Open System Settings"
+          sleep 8
 
-      # === IMPROVED: Navigate and enable in System Settings ===
-      - name: Enable RustDesk Screen Recording Permission
+      # ====== STEP 3: Find and Click RustDesk Switch ======
+      - name: Enable RustDesk Screen Recording (Multiple Attempts)
         run: |
+          sudo -u vncuser screencapture -x /tmp/settings_before.png
+          tesseract /tmp/settings_before.png stdout 2>/dev/null | head -30
+          
+          # STRATEGY: Click multiple positions on the right side where switch might be
           sudo -u vncuser osascript <<'APPLESCRIPT'
             set userPassword to "Apple@123"
             
@@ -156,120 +121,69 @@ jobs:
                 set frontmost to true
                 delay 3
                 
-                -- macOS Ventura/Sonoma has a different UI structure
-                -- The main content is typically in a group/scroll area
+                -- Get main window info
+                set winSize to size of window 1
+                set winPos to position of window 1
+                set winW to item 1 of winSize
+                set winH to item 2 of winSize
+                set winX to item 1 of winPos
+                set winY to item 2 of winPos
                 
-                try
-                  -- Method 1: Find RustDesk in the list by searching
-                  set mainWindow to window 1
-                  
-                  -- Look through all scroll areas (list container)
-                  set allScrollAreas to every scroll area of mainWindow
-                  
-                  repeat with scrollArea in allScrollAreas
-                    try
-                      -- Check for tables (the app list is usually a table)
-                      set allTables to every table of scrollArea
-                      repeat with tbl in allTables
-                        set allRows to every row of tbl
-                        repeat with row in allRows
-                          try
-                            -- Check if this row contains "RustDesk"
-                            set rowText to value of static text 1 of row
-                            if rowText contains "RustDesk" then
-                              -- Found it! Click the checkbox/switch
-                              try
-                                click checkbox 1 of row
-                                return "Enabled RustDesk via checkbox"
-                              on error
-                                try
-                                  click switch 1 of row
-                                  return "Enabled RustDesk via switch"
-                                end try
-                              end try
-                            end if
-                          end try
-                        end repeat
-                      end repeat
-                    end try
-                  end repeat
-                  
-                on error errMsg
-                  -- Method 2: Use keyboard navigation
-                  -- Press Cmd+F to search if available
-                  keystroke "f" using {command down}
+                log "Window: " & winX & "," & winY & " size: " & winW & "x" & winH
+                
+                -- RustDesk row should be around middle of the window
+                -- Switch is on the RIGHT side of the row
+                -- Try clicking at various Y positions on the right edge
+                
+                set switchX to winX + winW - 50
+                
+                -- Try Y positions from 200 to 500 (where RustDesk row likely is)
+                repeat with tryY from 200 to 500 by 50
+                  set clickY to winY + tryY
+                  log "Trying click at: " & (switchX as integer) & "," & (clickY as integer)
+                  do shell script "sudo -u vncuser cliclick c:" & (switchX as integer) & "," & (clickY as integer)
                   delay 1
-                  keystroke "RustDesk"
-                  delay 2
-                  keystroke return
-                  delay 2
-                  -- Tab to the checkbox and toggle it
-                  keystroke tab
-                  delay 0.5
-                  keystroke space
-                end try
+                end repeat
+                
               end tell
               
-              -- Handle password prompt for admin action
-              delay 2
-              if exists process "SecurityAgent" then
-                tell process "SecurityAgent"
-                  try
-                    set frontmost to true
-                    delay 1
-                    -- Enter password
-                    keystroke userPassword
-                    delay 0.5
-                    keystroke return
-                  end try
-                end tell
-              end if
-            end tell
-          APPLESCRIPT
-          
-          echo "✅ Attempted to enable RustDesk permission"
-          sleep 3
-
-      # === IMPROVED: Handle Quit & Reopen dialog ===
-      - name: Handle Quit & Reopen Dialog
-        run: |
-          sudo -u vncuser osascript <<'APPLESCRIPT'
-            tell application "System Events"
-              delay 2
-              
-              -- Check for SecurityAgent (quit dialog)
+              -- Handle password popup
+              delay 3
               if exists process "SecurityAgent" then
                 tell process "SecurityAgent"
                   set frontmost to true
                   delay 1
                   
-                  try
-                    set allWindows to every window
-                    repeat with win in allWindows
-                      -- Look for Quit & Reopen button
-                      set allButtons to every button of win
-                      repeat with btn in allButtons
-                        set btnTitle to name of btn
-                        if btnTitle contains "Quit" or btnTitle contains "Reopen" then
-                          click btn
-                          return "Clicked Quit & Reopen"
-                        end if
-                      end repeat
-                    end repeat
-                  end try
+                  -- Just type password (field should be focused)
+                  keystroke userPassword
+                  delay 0.5
+                  keystroke return
                 end tell
               end if
+            end tell
+          APPLESCRIPT
+          
+          echo "✅ Attempted to toggle switch"
+          sleep 5
+
+      # ====== STEP 4: Handle Quit & Reopen ======
+      - name: Handle Quit & Reopen
+        run: |
+          sleep 3
+          
+          sudo -u vncuser osascript <<'APPLESCRIPT'
+            tell application "System Events"
+              delay 2
               
-              -- Also check if RustDesk itself has a dialog
-              if exists process "RustDesk" then
-                tell process "RustDesk"
+              if exists process "SecurityAgent" then
+                tell process "SecurityAgent"
                   try
+                    -- Click any "Quit" button
                     set allButtons to every button of window 1
                     repeat with btn in allButtons
-                      set btnTitle to name of btn
-                      if btnTitle contains "Quit" or btnTitle contains "Restart" then
+                      if name of btn contains "Quit" then
                         click btn
-                        return "Clicked Quit/Restart in RustDesk"
+                        return "Clicked Quit"
                       end if
                     end repeat
                   end try
@@ -278,94 +192,57 @@ jobs:
             end tell
           APPLESCRIPT
           
-          echo "✅ Handled Quit & Reopen"
           sleep 15
 
-      # === Relaunch RustDesk after permission grant ===
-      - name: Relaunch RustDesk
+      # ====== STEP 5: Restart RustDesk ======
+      - name: Restart RustDesk and Get Credentials
         run: |
           sudo -u vncuser killall RustDesk 2>/dev/null || true
-          sleep 2
-          sudo -u vncuser open /Applications/RustDesk.app
-          echo "Waiting for RustDesk to start with permissions..."
-          sleep 20
-
-      - name: Extract RustDesk Credentials
-        run: |
-          sudo -u vncuser osascript -e 'tell application "System Events" to tell process "RustDesk" to set frontmost to true'
           sleep 3
+          sudo -u vncuser open /Applications/RustDesk.app
+          sleep 25
           
-          # Take screenshot
-          sudo -u vncuser screencapture -x /tmp/rustdesk_screen.png
+          # Screenshot
+          sudo -u vncuser screencapture -x /tmp/rustdesk_final.png
           
-          # OCR extract
-          cd /tmp
-          tesseract rustdesk_screen.png stdout -l eng 2>/dev/null > rustdesk_text.txt
-          
-          echo "=== OCR Output ==="
-          cat rustdesk_text.txt
+          # OCR
+          tesseract /tmp/rustdesk_final.png /tmp/output -l eng 2>/dev/null
+          echo "=== OCR OUTPUT ==="
+          cat /tmp/output.txt
           echo "=================="
           
-          # Extract ID (9 digits)
-          RUSTDESK_ID=$(grep -Eo '[0-9]{9}' rustdesk_text.txt | head -1)
-          # Extract Password (alphanumeric, typically 6 chars)
-          RUSTDESK_PASS=$(grep -Eo '[A-Za-z0-9]{6}' rustdesk_text.txt | tail -1)
+          # Extract credentials
+          RUSTDESK_ID=$(grep -Eo '[0-9]{9}' /tmp/output.txt | head -1)
+          RUSTDESK_PASS=$(grep -Eo '[A-Za-z0-9]{6}' /tmp/output.txt | tail -1)
           
           echo "RUSTDESK_ID=$RUSTDESK_ID" >> $GITHUB_ENV
           echo "RUSTDESK_PASS=$RUSTDESK_PASS" >> $GITHUB_ENV
           
-          if [ -n "$RUSTDESK_ID" ]; then
-            echo "✅ RustDesk ID: $RUSTDESK_ID"
-          else
-            echo "⚠️ Could not extract ID automatically"
-          fi
-          
-          if [ -n "$RUSTDESK_PASS" ]; then
-            echo "✅ Password: $RUSTDESK_PASS"
-          else
-            echo "⚠️ Could not extract password automatically"
-          fi
+          [ -n "$RUSTDESK_ID" ] && echo "✅ ID: $RUSTDESK_ID"
+          [ -n "$RUSTDESK_PASS" ] && echo "✅ Pass: $RUSTDESK_PASS"
 
-      - name: Upload Screenshot
+      - name: Upload Screenshots
         uses: actions/upload-artifact@v4
         with:
-          name: rustdesk-screenshot
-          path: /tmp/rustdesk_screen.png
+          name: rustdesk-screenshots
+          path: /tmp/*.png
           if-no-files-found: ignore
 
-      - name: Display Connection Info
+      - name: Show Connection Info
         run: |
           echo ""
-          echo "╔══════════════════════════════════════════════════════════════╗"
-          echo "║                    RUSTDESK CONNECTION INFO                  ║"
-          echo "╠══════════════════════════════════════════════════════════════╣"
-          echo "║                                                              ║"
-          echo "║  RustDesk ID:  ${{ env.RUSTDESK_ID }}                                "
-          echo "║  Password:     ${{ env.RUSTDESK_PASS }}                              "
-          echo "║                                                              ║"
-          echo "╠══════════════════════════════════════════════════════════════╣"
-          echo "║  📱 ANDROID CONNECTION STEPS:                                ║"
-          echo "║                                                              ║"
-          echo "║  1. Install 'RustDesk' from Google Play Store                ║"
-          echo "║     (No Tailscale needed - RustDesk works directly!)         ║"
-          echo "║                                                              ║"
-          echo "║  2. Open RustDesk app                                        ║"
-          echo "║                                                              ║"
-          echo "║  3. Enter the ID above in 'Remote ID' field                  ║"
-          echo "║                                                              ║"
-          echo "║  4. Tap Connect                                              ║"
-          echo "║                                                              ║"
-          echo "║  5. When prompted, enter the password above                  ║"
-          echo "║                                                              ║"
-          echo "║  6. You should see the macOS GUI desktop! 🎉                 ║"
-          echo "║                                                              ║"
-          echo "╚══════════════════════════════════════════════════════════════╝"
-          echo ""
-          echo "💡 If OCR failed, download the screenshot artifact from the"
-          echo "   'Artifacts' section below and read the ID/Password manually."
+          echo "╔══════════════════════════════════════════════════════╗"
+          echo "║              RUSTDESK CONNECTION INFO                ║"
+          echo "╠══════════════════════════════════════════════════════╣"
+          echo "║  ID:  ${{ env.RUSTDESK_ID }}                              "
+          echo "║  Pass: ${{ env.RUSTDESK_PASS }}                                "
+          echo "╠══════════════════════════════════════════════════════╣"
+          echo "║  📱 Android: RustDesk app from Play Store            ║"
+          echo "║  Enter ID → Connect → Enter password                 ║"
+          echo "╚══════════════════════════════════════════════════════╝"
           echo ""
           
           while true; do
-            echo "[$(date)] Session active - Ctrl+C to terminate"
+            echo "[$(date)] Active"
             sleep 3600
           done
