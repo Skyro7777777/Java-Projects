@@ -1,4 +1,4 @@
-name: macOS GUI (VNC + Tailscale)
+name: macOS GUI (Simple "mac" password)
 on: workflow_dispatch
 
 jobs:
@@ -10,7 +10,7 @@ jobs:
           brew install tailscale
           sudo tailscaled --tun=userspace-networking &
           sleep 5
-          sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=github-macos-final
+          sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=github-macos-simple
           for i in {1..10}; do
             IP=$(sudo tailscale ip -4 2>/dev/null || true)
             if [ -n "$IP" ]; then
@@ -20,50 +20,62 @@ jobs:
             sleep 5
           done
 
-      - name: Enable Screen Sharing (VNC) with correct password
+      - name: Create user with simple password "mac"
+        run: |
+          sudo dscl . -create /Users/vncuser
+          sudo dscl . -create /Users/vncuser UserShell /bin/bash
+          sudo dscl . -create /Users/vncuser RealName "VNC User"
+          sudo dscl . -create /Users/vncuser UniqueID "510"
+          sudo dscl . -create /Users/vncuser PrimaryGroupID 20
+          sudo dscl . -create /Users/vncuser NFSHomeDirectory /Users/vncuser
+          sudo dscl . -passwd /Users/vncuser "mac"
+          sudo dscl . -append /Groups/admin GroupMembership vncuser
+          sudo createhomedir -c -u vncuser
+          echo "✅ Created user: vncuser (password: mac)"
+
+      - name: Enable Screen Sharing with VNC password "mac"
         run: |
           # Enable the VNC server
           sudo defaults write /var/db/launchd.db/com.apple.launchd/overrides.plist com.apple.screensharing -dict Disabled -bool false
           sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null || true
 
-          # Set the VNC password (max 8 chars)
-          VNC_PASS="Apple@12"
+          # Set VNC password to "mac" (3 chars, well under 8 char limit)
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -configure -clientopts -setvncpw -vncpw "$VNC_PASS"
+            -configure -clientopts -setvncpw -vncpw "mac"
 
-          # Restart the service to apply
+          # Restart the service
           sudo launchctl unload /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null
           sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist
-
-          # Verify
+          
           sleep 5
-          if sudo lsof -i :5900 > /dev/null; then
-            echo "✅ VNC server is listening on port 5900 with password $VNC_PASS"
-          else
-            echo "❌ VNC server failed to start"
-            exit 1
-          fi
+          echo "✅ VNC server ready with password: mac"
 
-      - name: Wake up the display
+      - name: Wake display
         run: |
-          # Install cliclick to simulate mouse movement
           brew install cliclick
-          # Move mouse slightly to wake display
           cliclick c:.
-          echo "✅ Display woken"
 
       - name: Keep alive and show connection info
         run: |
           echo "========================================================="
-          echo "✅ VNC server ready"
+          echo "✅ VNC SERVER READY"
           echo "========================================================="
           echo "Tailscale IP: ${{ env.TAILSCALE_IP }}"
           echo ""
-          echo "🔹 Connect with any VNC client to ${{ env.TAILSCALE_IP }}:5900"
-          echo "   VNC password: Apple@12"
+          echo "📱 CONNECTION INSTRUCTIONS (ANDROID):"
+          echo "----------------------------------------"
+          echo "1. Open your VNC client (bVNC, RealVNC, etc.)"
+          echo "2. Create new connection with:"
+          echo "   - Connection Type: Basic VNC"
+          echo "   - VNC Server: ${{ env.TAILSCALE_IP }}:5900"
+          echo "   - VNC Username: (leave BLANK)"
+          echo "   - VNC Password: mac"
           echo ""
-          echo "👉 You should see the desktop of the 'runner' user."
+          echo "3. After connecting, you'll see macOS login screen"
+          echo "4. Log in with:"
+          echo "   - Username: vncuser"
+          echo "   - Password: mac"
           echo ""
-          echo "⏳ Job will stay alive for 6 hours."
+          echo "⏳ Job will stay alive for 6 hours"
           echo "========================================================="
           while true; do sleep 3600; done
