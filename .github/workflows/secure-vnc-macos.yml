@@ -1,16 +1,16 @@
-name: macOS GUI (DeepLink Automated)
+name: macOS GUI (RustDesk)
 on: workflow_dispatch
 
 jobs:
   gui:
     runs-on: macos-latest
     steps:
-      - name: Install Tailscale (optional)
+      - name: Install Tailscale (optional, for secure access)
         run: |
           brew install tailscale
           sudo tailscaled --tun=userspace-networking &
           sleep 5
-          sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=github-macos-deeplink || true
+          sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=github-macos-rustdesk || true
           for i in {1..5}; do
             IP=$(sudo tailscale ip -4 2>/dev/null || echo "unknown")
             if [ "$IP" != "unknown" ]; then
@@ -33,116 +33,93 @@ jobs:
           sudo createhomedir -c -u vncuser
           echo "✅ Created user: vncuser (password: Apple@123)"
 
-      - name: Install dependencies (cliclick, tesseract, imagemagick)
+      - name: Install dependencies (tesseract OCR, cliclick)
         run: |
-          brew install cliclick tesseract imagemagick
+          brew install tesseract cliclick
 
-      - name: Download DeepLink .dmg
+      - name: Download RustDesk (official permanent link)
         run: |
-          curl -L -o /tmp/deeplink.dmg "https://pub-1b47391b45ed418d8a02bf732d2f944a.r2.dev/deeplink_arm64.dmg"
+          curl -L -o /tmp/rustdesk.dmg "https://github.com/rustdesk/rustdesk/releases/download/1.4.6/rustdesk-1.4.6-x86_64.dmg"
           echo "✅ Download complete"
 
-      - name: Install DeepLink
+      - name: Install RustDesk
         run: |
-          hdiutil attach /tmp/deeplink.dmg -nobrowse -mountpoint /Volumes/DeepLink
-          cp -R "/Volumes/DeepLink/DeepLink.app" /Applications/
-          hdiutil detach "/Volumes/DeepLink"
-          echo "✅ DeepLink installed to /Applications"
+          hdiutil attach /tmp/rustdesk.dmg -nobrowse -mountpoint /Volumes/RustDesk
+          cp -R "/Volumes/RustDesk/RustDesk.app" /Applications/
+          hdiutil detach "/Volumes/RustDesk"
+          echo "✅ RustDesk installed to /Applications"
 
-      - name: Launch DeepLink and wait for full load
+      - name: Launch RustDesk and wait for it to show ID/password
         run: |
-          sudo -u vncuser open /Applications/DeepLink.app
-          echo "Waiting 60 seconds for DeepLink to fully initialize..."
-          sleep 60
+          sudo -u vncuser open /Applications/RustDesk.app
+          echo "Waiting 15 seconds for RustDesk to initialize..."
+          sleep 15
 
-      - name: Navigate to Remote Control tab and reveal password
+      - name: Bring RustDesk to front and take screenshot
         run: |
-          # Use AppleScript to click the "Remote Control" tab and then the eye button
+          # Use AppleScript to ensure RustDesk is frontmost
           sudo -u vncuser osascript <<'APPLESCRIPT' || true
             tell application "System Events"
-              tell process "DeepLink"
+              tell process "RustDesk"
                 set frontmost to true
-                delay 2
-                -- Click on the "Remote Control" tab (assuming it's a button or radio button)
-                try
-                  click (first button of window 1 whose name contains "Remote Control")
-                on error
-                  -- Fallback: try clicking by position (if name not found)
-                  click at {200, 100} -- approximate coordinates; adjust if needed
-                end try
-                delay 3
-                -- Now click the eye button to reveal password
-                -- The eye button is likely a button with no text, so we click by position
-                -- Assuming the eye is near the password field (e.g., right side)
-                -- Let's try a few candidate positions
-                try
-                  -- First attempt: look for a button with description "eye"
-                  click (first button of window 1 whose description contains "eye")
-                on error
-                  -- Fallback: click at a relative position (adjust based on screenshot)
-                  click at {400, 300}
-                end try
               end tell
             end tell
           APPLESCRIPT
-          echo "✅ Attempted to click Remote Control tab and eye button"
-          sleep 5
+          sleep 2
+          # Take screenshot
+          sudo -u vncuser screencapture -x /tmp/rustdesk_screen.png
+          echo "✅ Screenshot captured"
 
-      - name: Capture screenshot and extract credentials
+      - name: Extract ID and password from screenshot
         run: |
-          # Take a screenshot of the whole screen
-          sudo -u vncuser screencapture -x /tmp/deeplink_screen.png
-
-          # Use OCR to extract Device ID and password
           cd /tmp
-          # Enhance image for better OCR
-          convert deeplink_screen.png -colorspace Gray -contrast -sharpen 0x1 enhanced.png
-          tesseract enhanced.png stdout -l eng 2>/dev/null > deeplink_text.txt
+          # Use OCR to extract text
+          tesseract rustdesk_screen.png stdout -l eng 2>/dev/null > rustdesk_text.txt
+          
+          echo "=== RUSTDESK CREDENTIALS ==="
+          # RustDesk ID is typically a 9-digit number
+          RUSTDESK_ID=$(grep -Eo '[0-9]{9}' rustdesk_text.txt | head -1)
+          # Password is usually 6-8 alphanumeric characters (may appear after "Password" or similar)
+          RUSTDESK_PASS=$(grep -Eo '[A-Za-z0-9]{6,8}' rustdesk_text.txt | tail -1)
 
-          echo "=== DEEPLINK CREDENTIALS ==="
-          # Look for a 9-digit number (Device ID)
-          DEVICE_ID=$(grep -Eo '[0-9]{9}' deeplink_text.txt | head -1)
-          # Look for a password: likely 6+ alphanumeric characters (might be mixed case)
-          PASSWORD=$(grep -Eo '[A-Za-z0-9]{6,}' deeplink_text.txt | tail -1)
-
-          if [ -n "$DEVICE_ID" ]; then
-            echo "✅ Device ID: $DEVICE_ID"
+          if [ -n "$RUSTDESK_ID" ]; then
+            echo "✅ RustDesk ID: $RUSTDESK_ID"
           else
-            echo "❌ Could not extract Device ID. See full OCR text below:"
-            cat deeplink_text.txt
+            echo "❌ Could not extract ID. Full OCR text:"
+            cat rustdesk_text.txt
           fi
 
-          if [ -n "$PASSWORD" ]; then
-            echo "✅ Password: $PASSWORD"
+          if [ -n "$RUSTDESK_PASS" ]; then
+            echo "✅ Password: $RUSTDESK_PASS"
           else
             echo "❌ Could not extract password. Full OCR text:"
-            cat deeplink_text.txt
+            cat rustdesk_text.txt
           fi
 
           # Save to environment
-          echo "DEEPLINK_ID=$DEVICE_ID" >> $GITHUB_ENV
-          echo "DEEPLINK_PASS=$PASSWORD" >> $GITHUB_ENV
+          echo "RUSTDESK_ID=$RUSTDESK_ID" >> $GITHUB_ENV
+          echo "RUSTDESK_PASS=$RUSTDESK_PASS" >> $GITHUB_ENV
 
       - name: Upload screenshot for manual verification
         uses: actions/upload-artifact@v4
         with:
-          name: deeplink-screenshot
-          path: /tmp/deeplink_screen.png
+          name: rustdesk-screenshot
+          path: /tmp/rustdesk_screen.png
           if-no-files-found: ignore
 
       - name: Display connection info and keep alive
         run: |
           echo "========================================================="
-          echo "✅ DEEPLINK READY"
+          echo "✅ RUSTDESK READY"
           echo "========================================================="
-          echo "DeepLink Device ID: ${{ env.DEEPLINK_ID }}"
-          echo "DeepLink Password:  ${{ env.DEEPLINK_PASS }}"
+          echo "RustDesk ID: ${{ env.RUSTDESK_ID }}"
+          echo "Password:    ${{ env.RUSTDESK_PASS }}"
           echo ""
           echo "📱 ANDROID CONNECTION:"
-          echo "   1. Install 'DeepLink' from Google Play Store"
-          echo "   2. Open the app and tap 'Remote Control'"
-          echo "   3. Enter the Device ID and Password above"
-          echo "   4. You will see the macOS desktop instantly!"
+          echo "   1. Install 'RustDesk' from Google Play Store"
+          echo "   2. Open the app and enter the ID above"
+          echo "   3. When prompted, enter the password"
+          echo "   4. You will see the macOS desktop!"
           echo ""
           echo "🌐 Tailscale IP (if needed): ${{ env.TAILSCALE_IP }}"
           echo ""
