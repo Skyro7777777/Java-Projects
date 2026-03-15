@@ -1,4 +1,4 @@
-name: macOS GUI (AskLink via App Store)
+name: macOS GUI (AskLink Direct Install)
 on: workflow_dispatch
 
 jobs:
@@ -33,7 +33,7 @@ jobs:
           sudo createhomedir -c -u vncuser
           echo "✅ Created user: vncuser (password: Apple@123)"
 
-      - name: Enable Screen Sharing (VNC) with password Apple@12
+      - name: Enable Screen Sharing (VNC) as fallback
         run: |
           sudo defaults write /var/db/launchd.db/com.apple.launchd/overrides.plist com.apple.screensharing -dict Disabled -bool false
           sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null || true
@@ -41,37 +41,42 @@ jobs:
             -configure -clientopts -setvncpw -vncpw "Apple@12"
           sudo launchctl unload /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null
           sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist
-          sleep 5
-          echo "✅ VNC ready on port 5900 (password: Apple@12)"
+          echo "✅ VNC fallback ready on port 5900"
 
-      - name: Open App Store for AskLink installation (manual step)
+      - name: Download and Install AskLink directly
+        run: |
+          echo "Downloading AskLink from official source..."
+          curl -L -o /tmp/AskLink.dmg "https://dl.asklink.com/client/mac/latest/AskLink.dmg"
+          hdiutil attach /tmp/AskLink.dmg -nobrowse
+          cp -R "/Volumes/AskLink/AskLink.app" /Applications/
+          hdiutil detach "/Volumes/AskLink"
+          echo "✅ AskLink installed to /Applications"
+
+      - name: Launch AskLink
+        run: |
+          # Launch AskLink as the user who will use it
+          sudo -u vncuser open /Applications/AskLink.app &
+          sleep 10
+          echo "✅ AskLink launched - check the app for your connection ID"
+
+      - name: Keep alive and show connection info
         run: |
           echo "========================================================="
-          echo "📱 INSTRUCTIONS FOR NEXT STEP"
+          echo "✅ SERVICES READY"
           echo "========================================================="
-          echo "1. Connect via VNC to ${{ env.TAILSCALE_IP }}:5900"
-          echo "   VNC Password: Apple@12"
+          echo "Tailscale IP: ${{ env.TAILSCALE_IP }}"
           echo ""
-          echo "2. Even if the screen is black, the desktop is live."
-          echo "   Follow the navigation guide to install AskLink:"
+          echo "🔹 ASKLINK (RECOMMENDED):"
+          echo "   • AskLink is installed and running"
+          echo "   • On your Android, install AskLink from Play Store"
+          echo "   • Look at the runner's screen (via VNC or screenshot) for the 9-digit ID"
+          echo "   • Enter that ID in your Android app to connect"
+          echo "   • AskLink's virtual display will bypass the black screen! [citation:8]"
           echo ""
-          echo "   a) Press Cmd+Space → type 'App Store' → Enter"
-          echo "   b) Click search (top-right) → type 'AskLink' → Enter"
-          echo "   c) Click 'Get' (center of screen) → Click 'Install'"
-          echo "   d) Press Cmd+Space → type 'AskLink' → Enter"
-          echo "   e) Note the Device ID and password shown"
+          echo "🔹 VNC (FALLBACK):"
+          echo "   • Port 5900, Password: Apple@12"
+          echo "   • Login: vncuser / Apple@123"
           echo ""
-          echo "3. On your Android, install AskLink from Play Store"
-          echo "4. Enter the Device ID and password"
-          echo "5. You should see the macOS desktop!"
+          echo "⏳ Job will stay alive for 6 hours"
           echo "========================================================="
-
-      - name: Wake display
-        run: |
-          brew install cliclick
-          cliclick c:. m:0,0 c:.
-
-      - name: Keep alive
-        run: |
-          echo "⏳ Job will stay alive for 6 hours."
           while true; do sleep 3600; done
