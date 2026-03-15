@@ -1,65 +1,77 @@
-name: NoMachine macOS Stable (Tailscale Remote Desktop)
+name: NoMachine macOS Remote Desktop (Tailscale)
 
 on:
   workflow_dispatch:
 
 jobs:
-  mac:
-    runs-on: macos-13
+  remote-macos:
+    runs-on: macos-latest
     timeout-minutes: 420
 
     steps:
 
-    - name: Install NoMachine safely
+    - name: Install NoMachine
       run: |
         brew install --cask nomachine
 
-        echo "Waiting for NoMachine install..."
+        echo "Waiting for installation…"
 
         for i in {1..30}; do
           if [ -f /usr/NX/bin/nxserver ]; then
-            echo "nxserver found"
+            echo "nxserver found!"
             break
           fi
           sleep 2
         done
 
         if [ ! -f /usr/NX/bin/nxserver ]; then
-          echo "NoMachine not installed"
-          ls /usr
-          ls /usr/NX || true
+          echo "NoMachine did not install correctly"
           exit 1
         fi
 
+        # Enable the unofficial "virtual desktop" mode
         sudo /usr/NX/bin/nxserver --virtualdesktop yes || true
         sudo /usr/NX/bin/nxserver --restart
 
-        echo "NoMachine ready"
-
+        echo "NoMachine installed and running…"
 
     - name: Connect Tailscale
       uses: tailscale/github-action@v4
       with:
         authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
-        tags: tag:gh-mac
         statedir: /tmp/tailscale-state
-
 
     - name: Get Tailscale IP
       run: |
         TS=$(tailscale ip -4)
-        echo "IP=$TS" >> $GITHUB_ENV
+        echo "TAILSCALE_IP=$TS" >> $GITHUB_ENV
         echo "Tailscale IP: $TS"
 
-
-    - name: Check NoMachine port
+    - name: Check NoMachine Port
       run: |
         sleep 5
-        nc -z 127.0.0.1 4000 || exit 1
-        echo "Port 4000 OK"
+        nc -z "${{ env.TAILSCALE_IP }}" 4000 || {
+          echo "Port 4000 not reachable"
+          exit 1
+        }
+        echo "Port 4000 is open"
 
+    - name: Keep Session Alive
+      run: |
+        echo ""
+        echo "=== NO MACHINE ACCESS ==="
+        echo "Address: ${{ env.TAILSCALE_IP }}:4000"
+        echo "Protocol: NX"
+        echo "User: runner"
+        echo "Password: (leave empty)"
+        echo "========================="
+        echo "Connect from your NoMachine client now."
+        echo ""
 
-    - name: Maintain session
+        while true; do
+          date
+          sleep 300
+        done    - name: Maintain session
       run: |
         echo ""
         echo "=== CONNECT WITH NOMACHINE ==="
