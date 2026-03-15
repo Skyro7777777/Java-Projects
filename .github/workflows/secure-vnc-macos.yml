@@ -1,11 +1,11 @@
-name: macOS GUI (Tailscale + NoMachine + VNC Fallback)
+name: macOS GUI (Tailscale + NoMachine)
 on: workflow_dispatch
 
 jobs:
   gui:
     runs-on: macos-latest
     steps:
-      - name: Install and connect Tailscale
+      - name: Install Tailscale
         run: |
           brew install tailscale
           sudo tailscaled --tun=userspace-networking &
@@ -15,7 +15,6 @@ jobs:
             IP=$(sudo tailscale ip -4 2>/dev/null || true)
             if [ -n "$IP" ]; then
               echo "TAILSCALE_IP=$IP" >> $GITHUB_ENV
-              echo "✅ Tailscale IP: $IP"
               break
             fi
             sleep 5
@@ -32,78 +31,49 @@ jobs:
           sudo dscl . -passwd /Users/vncuser "Apple@123"
           sudo dscl . -append /Groups/admin GroupMembership vncuser
           sudo createhomedir -c -u vncuser
-          echo "✅ Created user: vncuser (password: Apple@123)"
 
-      - name: Force macOS GUI session to start
+      - name: Force a full GUI session for vncuser
         run: |
+          # Bootstrap the user's graphical session
           sudo -u vncuser launchctl bootstrap gui/$(id -u vncuser) /System/Library/LaunchAgents/com.apple.Dock.plist 2>/dev/null || true
           sudo -u vncuser open -a Finder 2>/dev/null || true
           sudo -u vncuser open /System/Library/CoreServices/SystemUIServer.app 2>/dev/null || true
-          sleep 10
-          echo "✅ GUI session initiated"
+          # Also launch the login window (in case the user isn't auto-logged in)
+          sudo -u vncuser /System/Library/CoreServices/Menu\ Extras/User.menu/Contents/Resources/CGSession -suspend 2>/dev/null || true
+          sleep 15
+          echo "✅ GUI session should be active"
 
-      - name: Install and start NoMachine (using launchctl)
+      - name: Install and start NoMachine
         run: |
           brew install --cask nomachine
-          # Load the launch daemon (reliable method)
-          sudo launchctl load /Library/LaunchDaemons/com.nomachine.nxserver.plist 2>/dev/null || true
+          sudo launchctl load /Library/LaunchDaemons/com.nomachine.nxserver.plist
           sleep 15
           if sudo lsof -i :4000 > /dev/null; then
             echo "✅ NoMachine listening on port 4000"
           else
-            echo "⚠️ NoMachine port not open, but continuing"
+            echo "❌ NoMachine failed to start"
+            exit 1
           fi
-
-      - name: (Optional Fallback) Install x11vnc + Xquartz
-        run: |
-          # This step is optional; failures will not stop the workflow
-          set +e
-          brew install --cask xquartz || true
-          brew install x11vnc || true
-          
-          # Start Xquartz (full path)
-          sudo -u vncuser /Applications/XQuartz.app/Contents/MacOS/Xquartz :1 &
-          sleep 10
-          
-          # Create .vnc directory with correct ownership
-          sudo mkdir -p /Users/vncuser/.vnc
-          sudo chown vncuser:staff /Users/vncuser/.vnc
-          
-          # Set VNC password
-          echo "Apple@12" | sudo -u vncuser x11vnc -storepasswd stdin /Users/vncuser/.vnc/passwd 2>/dev/null
-          
-          # Start x11vnc on port 5901
-          sudo -u vncuser x11vnc -display :1 -forever -shared -rfbauth /Users/vncuser/.vnc/passwd -rfbport 5901 &
-          sleep 5
-          if sudo lsof -i :5901 > /dev/null; then
-            echo "✅ x11vnc fallback running on port 5901 (password: Apple@12)"
-          else
-            echo "⚠️ x11vnc failed to start – you can still use NoMachine"
-          fi
-          set -e
 
       - name: Display connection info and keep alive
         run: |
           echo "========================================================="
-          echo "✅ SERVICES READY"
-          echo "========================================================="
+          echo "✅ NoMachine is ready on port 4000"
           echo "Tailscale IP: ${{ env.TAILSCALE_IP }}"
           echo ""
-          echo "🔹 NoMachine:"
-          echo "   Address: ${{ env.TAILSCALE_IP }}:4000"
-          echo "   Username: vncuser"
-          echo "   Password: Apple@123"
+          echo "🔹 Connect from your Android device:"
+          echo "   - Open NoMachine app, create new connection to ${{ env.TAILSCALE_IP }}:4000"
+          echo "   - Username: vncuser"
+          echo "   - Password: Apple@123"
           echo ""
-          echo "🔹 VNC (fallback via x11vnc):"
-          echo "   Address: ${{ env.TAILSCALE_IP }}:5901"
-          echo "   VNC Password: Apple@12"
-          echo "   (This gives an X11 desktop, not macOS native)"
+          echo "📱 Android Client Settings (critical):"
+          echo "   • Go to connection settings → Display → Enable 'Virtual desktop'"
+          echo "   • Set 'Connection quality' to LAN or Good quality"
+          echo "   • Try different codecs: under Advanced → Encoder, select 'JPEG' or 'VP8'"
+          echo "   • If still black, tap the screen and try sending a key (e.g., Ctrl+Alt+Del) to wake the session"
           echo ""
-          echo "📱 Android NoMachine Client Tips:"
-          echo "   - Set connection quality to LAN"
-          echo "   - Enable 'Virtual desktop' in settings"
-          echo "   - If still black, try the VNC fallback with bVNC or RealVNC"
+          echo "💻 If you have a desktop client, test with that first to confirm NoMachine works."
           echo ""
-          echo "⏳ Job will stay alive for 6 hours (GitHub limit)."
+          echo "⏳ Job will stay alive for 6 hours."
           echo "========================================================="
           while true; do sleep 3600; done
