@@ -1,48 +1,90 @@
-name: NoMachine macOS Remote Desktop (Tailscale)
+name: Secure NoMachine macOS Remote Desktop (Tailscale)
 
 on:
   workflow_dispatch:
 
 jobs:
-  mac:
+  remote-macos:
     runs-on: macos-latest
     timeout-minutes: 420
 
     steps:
 
-    - name: Install NoMachine
+    # ----------------------------------------
+    # Step 1: Install NoMachine safely
+    # ----------------------------------------
+    - name: Install NoMachine Server + Virtual Desktop
       run: |
+        echo "Installing NoMachine..."
         brew install --cask nomachine
+
+        echo "Waiting for nxserver binary to exist..."
         for i in {1..30}; do
-          [ -f /usr/NX/bin/nxserver ] && break
+          if [ -f /usr/NX/bin/nxserver ]; then
+            echo "nxserver found"
+            break
+          fi
           sleep 2
         done
+
         if [ ! -f /usr/NX/bin/nxserver ]; then
-          echo "NoMachine install failed"
+          echo "NoMachine binary not found after install!"
+          ls /usr/NX || true
           exit 1
         fi
+
+        # Enable virtual desktop mode (important for headless runners)
         sudo /usr/NX/bin/nxserver --virtualdesktop yes || true
         sudo /usr/NX/bin/nxserver --restart
 
+        echo "✅ NoMachine installed and virtual desktop started"
+
+    # ----------------------------------------
+    # Step 2: Connect Tailscale
+    # ----------------------------------------
     - name: Connect Tailscale
       uses: tailscale/github-action@v4
       with:
         authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
         statedir: /tmp/tailscale-state
 
+    # ----------------------------------------
+    # Step 3: Get Tailscale IP
+    # ----------------------------------------
     - name: Get Tailscale IP
       run: |
         TS_IP=$(tailscale ip -4)
         echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
         echo "Tailscale IP saved: $TS_IP"
 
-    - name: Verify NoMachine port
+    # ----------------------------------------
+    # Step 4: Verify NoMachine Port
+    # ----------------------------------------
+    - name: Verify NoMachine accessibility
       run: |
-        echo "Checking connectivity to ${{ env.TAILSCALE_IP }}:4000"
-        nc -z -w 5 "${{ env.TAILSCALE_IP }}" 4000 || exit 1
-        echo "Port 4000 is open"
+        sleep 5
+        echo "Checking TCP port 4000 on ${{ env.TAILSCALE_IP }}..."
+        nc -z -w 5 "${{ env.TAILSCALE_IP }}" 4000 || {
+          echo "Port 4000 not reachable!"
+          exit 1
+        }
+        echo "✅ NoMachine port 4000 is open"
 
-    - name: Keep session alive
+    # ----------------------------------------
+    # Step 5: Keep workflow alive for connection
+    # ----------------------------------------
+    - name: Maintain session
       run: |
-        echo "Connect using NoMachine NX to ${{ env.TAILSCALE_IP }}:4000"
-        while true; do sleep 300; done
+        echo ""
+        echo "=== CONNECT WITH NOMACHINE ==="
+        echo "Protocol: NX (NoMachine)"
+        echo "Host: ${{ env.TAILSCALE_IP }}:4000"
+        echo "Username: runner"
+        echo "Password: leave blank"
+        echo "⚠ First connection may take 20–40 seconds for virtual desktop to render"
+        echo "=============================="
+        echo ""
+        while true; do
+          date
+          sleep 300
+        done
