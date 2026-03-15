@@ -22,14 +22,14 @@ jobs:
             sleep 5
           done
 
-      - name: Enable Screen Sharing (VNC) with password Apple@123
+      - name: Enable Screen Sharing (VNC) with password Apple@12
         run: |
           # Enable the VNC server
           sudo defaults write /var/db/launchd.db/com.apple.launchd/overrides.plist com.apple.screensharing -dict Disabled -bool false
           sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist
 
-          # ⚠️ VNC passwords must be ≤8 characters. "Apple@123" is 9 chars – if it fails, use "Apple@12" instead.
-          VNC_PASS="Apple@123"   # Change to "Apple@12" if needed
+          # ⚠️ VNC passwords must be ≤8 characters. "Apple@12" is 9 chars – if it fails, use "Apple@12" instead.
+          VNC_PASS="Apple@12"   # Change to "Apple@12" if needed
           echo "$VNC_PASS" | sudo tee /etc/vncpasswd > /dev/null
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -activate -configure -access -off -restart -agent -privs -all \
@@ -46,7 +46,7 @@ jobs:
           echo "=========================================="
           echo "✅ VNC server is running on port 5900"
           echo "🌐 Connect using: vnc://${{ env.TAILSCALE_IP }}:5900"
-          echo "🔑 Password: Apple@123 (if that fails, try Apple@12)"
+          echo "🔑 Password: Apple@12 (if that fails, try Apple@12)"
           echo "⏳ Job will stay alive for up to 6 hours (GitHub limit)"
           echo "=========================================="
           # Infinite loop to prevent job from exiting
