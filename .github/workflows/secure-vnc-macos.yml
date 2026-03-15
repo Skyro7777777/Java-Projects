@@ -23,7 +23,6 @@ jobs:
 
       - name: Create user with known password
         run: |
-          # Create vncuser with password Apple@123
           sudo dscl . -create /Users/vncuser
           sudo dscl . -create /Users/vncuser UserShell /bin/bash
           sudo dscl . -create /Users/vncuser RealName "VNC User"
@@ -37,48 +36,51 @@ jobs:
 
       - name: Force macOS GUI session to start
         run: |
-          # Bootstrap the Dock and Finder to initiate the graphical environment
           sudo -u vncuser launchctl bootstrap gui/$(id -u vncuser) /System/Library/LaunchAgents/com.apple.Dock.plist 2>/dev/null || true
           sudo -u vncuser open -a Finder 2>/dev/null || true
-          sudo -u vncuser open /System/Library/CoreServices/Finder.app 2>/dev/null || true
-          # Also try launching SystemUIServer for menu bar
           sudo -u vncuser open /System/Library/CoreServices/SystemUIServer.app 2>/dev/null || true
           sleep 10
           echo "✅ GUI session initiated"
 
-      - name: Install and start NoMachine
+      - name: Install and start NoMachine (using launchctl)
         run: |
           brew install --cask nomachine
-          # Correct path: NoMachine (not NXServer)
-          sudo /Applications/NoMachine.app/Contents/MacOS/NoMachine &
-          sleep 15
-          # Also load launch daemon as fallback
+          # Load the launch daemon (reliable method)
           sudo launchctl load /Library/LaunchDaemons/com.nomachine.nxserver.plist 2>/dev/null || true
-          sleep 5
+          sleep 15
           if sudo lsof -i :4000 > /dev/null; then
             echo "✅ NoMachine listening on port 4000"
           else
             echo "⚠️ NoMachine port not open, but continuing"
           fi
 
-      - name: (Fallback) Install x11vnc + Xquartz for VNC if NoMachine fails
+      - name: (Optional Fallback) Install x11vnc + Xquartz
         run: |
-          brew install --cask xquartz
-          brew install x11vnc
-          # Start Xquartz on display :1 as user vncuser
-          sudo -u vncuser Xquartz :1 &
+          # This step is optional; failures will not stop the workflow
+          set +e
+          brew install --cask xquartz || true
+          brew install x11vnc || true
+          
+          # Start Xquartz (full path)
+          sudo -u vncuser /Applications/XQuartz.app/Contents/MacOS/Xquartz :1 &
           sleep 10
+          
+          # Create .vnc directory with correct ownership
+          sudo mkdir -p /Users/vncuser/.vnc
+          sudo chown vncuser:staff /Users/vncuser/.vnc
+          
           # Set VNC password
-          mkdir -p /Users/vncuser/.vnc
-          echo "Apple@12" | sudo -u vncuser x11vnc -storepasswd stdin /Users/vncuser/.vnc/passwd
+          echo "Apple@12" | sudo -u vncuser x11vnc -storepasswd stdin /Users/vncuser/.vnc/passwd 2>/dev/null
+          
           # Start x11vnc on port 5901
           sudo -u vncuser x11vnc -display :1 -forever -shared -rfbauth /Users/vncuser/.vnc/passwd -rfbport 5901 &
           sleep 5
           if sudo lsof -i :5901 > /dev/null; then
             echo "✅ x11vnc fallback running on port 5901 (password: Apple@12)"
           else
-            echo "⚠️ x11vnc failed to start"
+            echo "⚠️ x11vnc failed to start – you can still use NoMachine"
           fi
+          set -e
 
       - name: Display connection info and keep alive
         run: |
@@ -97,10 +99,10 @@ jobs:
           echo "   VNC Password: Apple@12"
           echo "   (This gives an X11 desktop, not macOS native)"
           echo ""
-          echo "🔹 If you still get black screen:"
-          echo "   - On Android NoMachine client, set connection quality to LAN"
-          echo "   - Try enabling 'Virtual desktop' in client settings"
-          echo "   - Use VNC client (like bVNC) for fallback"
+          echo "📱 Android NoMachine Client Tips:"
+          echo "   - Set connection quality to LAN"
+          echo "   - Enable 'Virtual desktop' in settings"
+          echo "   - If still black, try the VNC fallback with bVNC or RealVNC"
           echo ""
           echo "⏳ Job will stay alive for 6 hours (GitHub limit)."
           echo "========================================================="
