@@ -1,4 +1,4 @@
-name: Secure NoMachine (macOS Tailscale Remote Desktop) - True RDP Alternative
+name: Secure NoMachine (macOS Tailscale Remote Desktop) - Fixed Install
 
 on:
   workflow_dispatch:
@@ -32,13 +32,18 @@ jobs:
 
       - name: Install NoMachine Server (True RDP-like GUI)
         run: |
-          # Latest free version (update URL from https://www.nomachine.com/download if needed)
-          curl -L -o nomachine.pkg "https://downloads.nomachine.com/download/?id=7&platform=mac"
+          # Download latest DMG with proper User-Agent (fixes the 162-byte HTML error)
+          curl -L -J -O -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" \
+            "https://downloads.nomachine.com/download/?id=7&platform=mac"
           
-          sudo installer -pkg nomachine.pkg -target /
-          rm -f nomachine.pkg
+          # Mount DMG and install (official CLI method from NoMachine KB)
+          DMG=$(ls nomachine_*.dmg)
+          MOUNT=$(hdiutil attach -nobrowse "$DMG" | grep Volumes | awk '{print $NF}')
+          sudo installer -pkg "$MOUNT/NoMachine.pkg" -target /
+          hdiutil detach "$MOUNT" -force
+          rm -f "$DMG"
           
-          # Start the service
+          # Start NoMachine server
           sudo /usr/NX/bin/nxserver --restart || true
           
           echo "✅ NoMachine installed and running (port 4000)"
@@ -71,15 +76,17 @@ jobs:
       - name: Maintain Connection
         run: |
           echo ""
-          echo "=== NoMachine ACCESS (True RDP replacement) ==="
+          echo "=== NoMachine ACCESS (Exact Windows RDP equivalent) ==="
           echo "Address: ${{ env.TAILSCALE_IP }}:4000"
           echo "Username: Skyro"
           echo "Password: Apple@123"
           echo "=================="
           echo ""
-          echo "✅ Download FREE NoMachine client (Windows/Android/macOS): https://www.nomachine.com/download"
-          echo "Connect → enter the IP above → Username + Password"
-          echo "You will get a full Skyro desktop (no black screen ever)"
+          echo "✅ Download FREE NoMachine client (any platform):"
+          echo "https://www.nomachine.com/download"
+          echo ""
+          echo "Connect → choose 'NoMachine' connection type → enter the IP above"
+          echo "You will get a full Skyro desktop (virtual session, no black screen)"
           
           while true; do
               echo "[$(date)] NoMachine Active - Use Ctrl+C to terminate"
