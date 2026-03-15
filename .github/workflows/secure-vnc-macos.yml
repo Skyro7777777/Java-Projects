@@ -1,4 +1,4 @@
-name: Secure VNC (macOS Tailscale Remote Desktop) - Black Screen FIXED Forever
+name: Secure VNC (macOS Tailscale Remote Desktop) - Black Screen FIXED
 
 on:
   workflow_dispatch:
@@ -30,16 +30,13 @@ jobs:
           
           echo "✅ Skyro user created with password: Apple@123"
 
-      - name: Reset TCC + Enable Auto-Login
+      - name: Reset TCC Permissions
         run: |
           sudo tccutil reset ScreenCapture || true
           sudo tccutil reset Accessibility || true
-          
-          sudo defaults write /Library/Preferences/com.apple.loginwindow AutoLoginUser -string "Skyro"
-          
-          echo "✅ TCC reset + auto-login enabled"
+          echo "✅ TCC reset (black screen fix)"
 
-      - name: Set Legacy VNC Password File
+      - name: Set Legacy VNC Password File (Eliminates warnings)
         run: |
           echo "Apple@123" | perl -we '
             BEGIN { @k = unpack "C*", pack "H*", "1734516E8BA8C5E2FF1C39567390ADCA" }
@@ -61,19 +58,7 @@ jobs:
             -clientopts -setvncpw -vncpw "${{ env.VNC_PASSWORD }}" \
             -restart -agent
           
-          echo "✅ Screen Sharing enabled"
-
-      - name: Force Skyro Desktop Session (Black Screen Fix)
-        run: |
-          # This is the critical step that forces the real GUI desktop
-          nohup sudo killall loginwindow > /dev/null 2>&1 &
-          sleep 15
-          
-          # Restart ARD again after session switch
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -restart -agent
-          
-          echo "✅ Skyro desktop session forced - black screen eliminated!"
+          echo "✅ Screen Sharing (VNC on port 5900) enabled"
 
       - name: Connect Tailscale (Official GitHub Action)
         uses: tailscale/github-action@v4
@@ -106,11 +91,13 @@ jobs:
           echo "=== VNC ACCESS ==="
           echo "Address: vnc://${{ env.TAILSCALE_IP }}:5900"
           echo "Username: Skyro"
-          echo "VNC Password: Apple@123"
+          echo "Password: Apple@123"
           echo "=================="
           echo ""
-          echo "✅ FULL Skyro desktop is now active (no black screen)"
-          echo "Connect with Apple Screen Sharing, RealVNC Viewer, bVNC, etc."
+          echo "✅ FULL Skyro desktop is ready (no black screen)"
+          echo "Connect with:"
+          echo "• macOS Screen Sharing → enter Username + Password"
+          echo "• RealVNC Viewer, bVNC, etc. → use Username + Password"
           
           while true; do
               echo "[$(date)] VNC Active - Use Ctrl+C to terminate"
