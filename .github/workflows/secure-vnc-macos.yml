@@ -1,4 +1,4 @@
-name: Secure NoMachine (macOS Tailscale Remote Desktop) - White Screen Fixed
+name: Secure NoMachine (macOS Tailscale Remote Desktop) - Virtual Desktop Mode
 
 on:
   workflow_dispatch:
@@ -30,24 +30,20 @@ jobs:
           
           echo "✅ Skyro admin user created"
 
-      - name: Enable GUI Login Session (alt method)
+      - name: Skip loginwindow hack (use virtual desktop)
         run: |
-          sudo /usr/libexec/PlistBuddy -c "Add :autoLoginUser string Skyro" /Library/Preferences/com.apple.loginwindow.plist || true
-          sudo defaults write /Library/Preferences/com.apple.loginwindow autoLoginUser Skyro || true
+          echo "Skipping AutoLogin — using NoMachine virtual display"
 
-          sudo launchctl bootout system /System/Library/LaunchDaemons/com.apple.loginwindow.plist 2>/dev/null || true
-          sudo launchctl bootstrap system /System/Library/LaunchDaemons/com.apple.loginwindow.plist || true
-
-          sleep 40
-          echo "✅ GUI login session enabled (autoLoginUser set + loginwindow bootstrapped)"
-
-      - name: Install NoMachine Server + Headless Config
+      - name: Install NoMachine Server + Virtual Desktop
         run: |
           brew install --cask nomachine
-          
-          sudo /usr/NX/bin/nxserver --restart || true
-          
-          echo "✅ NoMachine installed and running (port 4000)"
+
+          sudo /usr/NX/bin/nxserver --virtualdesktop yes || true
+          sudo /usr/NX/bin/nxserver --restart
+
+          sleep 15
+
+          echo "✅ NoMachine virtual desktop enabled"
 
       - name: Reset macOS Permissions
         run: |
@@ -91,7 +87,7 @@ jobs:
           echo ""
           echo "Download client: https://www.nomachine.com/download"
           echo ""
-          echo "⚠️ Wait 30-60 seconds after connecting — GUI session is now forced."
+          echo "⚠️ Connect and wait 20-30s — virtual desktop mode active."
           
           while true; do
               echo "[$(date)] NoMachine Active - Ctrl+C to stop"
