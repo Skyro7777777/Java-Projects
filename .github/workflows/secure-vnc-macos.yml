@@ -30,26 +30,29 @@ jobs:
           
           echo "✅ Skyro admin user created"
 
-      - name: Enable GUI Login Session (fixes white screen)
+      - name: Enable GUI Login Session (Critical fix for white screen)
         run: |
           sudo defaults write /Library/Preferences/com.apple.loginwindow AutoLoginUser -string "Skyro"
-          sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.loginwindow.plist || true
-          sleep 15
-          echo "✅ Auto-login GUI session started for Skyro"
+          
+          # Modern bootstrap (replaces old load command that caused your "Input/output error")
+          sudo launchctl bootout system /System/Library/LaunchDaemons/com.apple.loginwindow.plist 2>/dev/null || true
+          sudo launchctl bootstrap system /System/Library/LaunchDaemons/com.apple.loginwindow.plist || true
+          
+          sleep 25
+          echo "✅ Auto-login GUI session started (loginwindow bootstrapped)"
 
       - name: Install NoMachine Server + Headless Config
         run: |
           brew install --cask nomachine
           
-          # macOS does NOT support --virtualdesktop (Linux-only). We use the auto-login session instead.
           sudo /usr/NX/bin/nxserver --restart || true
           
           echo "✅ NoMachine installed and running (port 4000)"
 
-      - name: Reset macOS Permissions (Screen Recording / Accessibility)
+      - name: Reset macOS Permissions
         run: |
           sudo tccutil reset All || true
-          echo "✅ Permissions reset for remote desktop"
+          echo "✅ Screen Recording / Accessibility permissions reset"
 
       - name: Connect Tailscale
         uses: tailscale/github-action@v4
@@ -88,7 +91,7 @@ jobs:
           echo ""
           echo "Download client: https://www.nomachine.com/download"
           echo ""
-          echo "If you still see white screen: this is the best possible fix on GitHub macOS runners (headless limitation). Connection works, desktop may need 10-30s to render."
+          echo "⚠️ Wait 20-30 seconds after connecting — desktop may take time to render on GitHub runner."
           
           while true; do
               echo "[$(date)] NoMachine Active - Ctrl+C to stop"
