@@ -1,4 +1,4 @@
-name: macOS GUI (Tailscale + NoMachine)
+name: macOS GUI (VNC + Tailscale)
 on: workflow_dispatch
 
 jobs:
@@ -10,7 +10,7 @@ jobs:
           brew install tailscale
           sudo tailscaled --tun=userspace-networking &
           sleep 5
-          sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=github-macos
+          sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=github-macos-final
           for i in {1..10}; do
             IP=$(sudo tailscale ip -4 2>/dev/null || true)
             if [ -n "$IP" ]; then
@@ -20,59 +20,49 @@ jobs:
             sleep 5
           done
 
-      - name: Create user with known password
+      - name: Enable Screen Sharing (VNC) with correct password
         run: |
-          sudo dscl . -create /Users/vncuser
-          sudo dscl . -create /Users/vncuser UserShell /bin/bash
-          sudo dscl . -create /Users/vncuser RealName "VNC User"
-          sudo dscl . -create /Users/vncuser UniqueID "510"
-          sudo dscl . -create /Users/vncuser PrimaryGroupID 20
-          sudo dscl . -create /Users/vncuser NFSHomeDirectory /Users/vncuser
-          sudo dscl . -passwd /Users/vncuser "Apple@123"
-          sudo dscl . -append /Groups/admin GroupMembership vncuser
-          sudo createhomedir -c -u vncuser
+          # Enable the VNC server
+          sudo defaults write /var/db/launchd.db/com.apple.launchd/overrides.plist com.apple.screensharing -dict Disabled -bool false
+          sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null || true
 
-      - name: Force a full GUI session for vncuser
-        run: |
-          # Bootstrap the user's graphical session
-          sudo -u vncuser launchctl bootstrap gui/$(id -u vncuser) /System/Library/LaunchAgents/com.apple.Dock.plist 2>/dev/null || true
-          sudo -u vncuser open -a Finder 2>/dev/null || true
-          sudo -u vncuser open /System/Library/CoreServices/SystemUIServer.app 2>/dev/null || true
-          # Also launch the login window (in case the user isn't auto-logged in)
-          sudo -u vncuser /System/Library/CoreServices/Menu\ Extras/User.menu/Contents/Resources/CGSession -suspend 2>/dev/null || true
-          sleep 15
-          echo "✅ GUI session should be active"
+          # Set the VNC password (max 8 chars)
+          VNC_PASS="Apple@12"
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -configure -clientopts -setvncpw -vncpw "$VNC_PASS"
 
-      - name: Install and start NoMachine
-        run: |
-          brew install --cask nomachine
-          sudo launchctl load /Library/LaunchDaemons/com.nomachine.nxserver.plist
-          sleep 15
-          if sudo lsof -i :4000 > /dev/null; then
-            echo "✅ NoMachine listening on port 4000"
+          # Restart the service to apply
+          sudo launchctl unload /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null
+          sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist
+
+          # Verify
+          sleep 5
+          if sudo lsof -i :5900 > /dev/null; then
+            echo "✅ VNC server is listening on port 5900 with password $VNC_PASS"
           else
-            echo "❌ NoMachine failed to start"
+            echo "❌ VNC server failed to start"
             exit 1
           fi
 
-      - name: Display connection info and keep alive
+      - name: Wake up the display
+        run: |
+          # Install cliclick to simulate mouse movement
+          brew install cliclick
+          # Move mouse slightly to wake display
+          cliclick c:.
+          echo "✅ Display woken"
+
+      - name: Keep alive and show connection info
         run: |
           echo "========================================================="
-          echo "✅ NoMachine is ready on port 4000"
+          echo "✅ VNC server ready"
+          echo "========================================================="
           echo "Tailscale IP: ${{ env.TAILSCALE_IP }}"
           echo ""
-          echo "🔹 Connect from your Android device:"
-          echo "   - Open NoMachine app, create new connection to ${{ env.TAILSCALE_IP }}:4000"
-          echo "   - Username: vncuser"
-          echo "   - Password: Apple@123"
+          echo "🔹 Connect with any VNC client to ${{ env.TAILSCALE_IP }}:5900"
+          echo "   VNC password: Apple@12"
           echo ""
-          echo "📱 Android Client Settings (critical):"
-          echo "   • Go to connection settings → Display → Enable 'Virtual desktop'"
-          echo "   • Set 'Connection quality' to LAN or Good quality"
-          echo "   • Try different codecs: under Advanced → Encoder, select 'JPEG' or 'VP8'"
-          echo "   • If still black, tap the screen and try sending a key (e.g., Ctrl+Alt+Del) to wake the session"
-          echo ""
-          echo "💻 If you have a desktop client, test with that first to confirm NoMachine works."
+          echo "👉 You should see the desktop of the 'runner' user."
           echo ""
           echo "⏳ Job will stay alive for 6 hours."
           echo "========================================================="
