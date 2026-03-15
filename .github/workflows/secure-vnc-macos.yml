@@ -1,4 +1,4 @@
-name: macOS GUI (RustDesk Simplified)
+name: macOS GUI (RustDesk with Reliable Clicks)
 on: workflow_dispatch
 
 jobs:
@@ -55,89 +55,84 @@ jobs:
           sudo -u vncuser open /Applications/RustDesk.app
           sleep 5
 
-      - name: Automate permission grant (AppleScript with fallbacks)
+      # --- Step 1: Click "Open System Settings" in the permission dialog ---
+      - name: Click "Open System Settings"
         run: |
-          sudo -u vncuser osascript <<'APPLESCRIPT'
-            -- Function to wait for a window containing text, then click a button
-            on clickButtonInWindow(buttonText, windowText, maxWait)
-              set startTime to current date
-              repeat while (current date) - startTime < maxWait
-                try
-                  tell application "System Events"
-                    set targetWindow to first window whose title contains windowText
-                    if exists targetWindow then
-                      click (first button of targetWindow whose title contains buttonText)
-                      return true
-                    end if
-                  end tell
-                on error
-                  delay 1
-                end try
-              end repeat
-              return false
-            end clickButtonInWindow
+          # Wait for dialog to appear (look for window with "Screen Recording" title)
+          for i in {1..20}; do
+            if sudo -u vncuser osascript -e 'tell app "System Events" to exists (first window whose title contains "Screen Recording")' 2>/dev/null; then
+              echo "Dialog found"
+              break
+            fi
+            sleep 1
+          done
+          # Click at approximate center of the dialog's button (assuming 1024x768 screen)
+          # Coordinates: x=512, y=384 (center) then adjust downward for button
+          sudo -u vncuser cliclick c:512,400
+          sleep 5
 
-            -- Step 1: Click "Open System Settings" in the permission dialog
-            if clickButtonInWindow("Open System Settings", "Screen Recording", 20) then
-              delay 5
-            else
-              -- Fallback: use cliclick at approximate position (center of screen)
-              do shell script "sudo -u vncuser cliclick c:500,400"
-              delay 5
-            end if
-
-            -- Step 2: In System Settings, enable the switch for RustDesk
-            tell application "System Events"
-              tell process "System Settings"
-                set frontmost to true
-                delay 3
-                -- Try to find the table and click the switch next to "RustDesk"
-                try
-                  set mainTable to table 1 of scroll area 1 of window 1
-                  repeat with aRow in (every row of mainTable)
-                    try
-                      if value of static text 1 of aRow is "RustDesk" then
-                        click checkbox 1 of aRow
-                        exit repeat
-                      end if
-                    end try
-                  end repeat
-                on error
-                  -- Fallback: click at estimated position (right side, mid-height)
-                  do shell script "sudo -u vncuser cliclick c:700,300"
-                end try
-              end tell
-            end tell
-            delay 3
-
-            -- Step 3: Handle password prompt if it appears
-            tell application "System Events"
-              try
-                set pwWindow to (first window whose title contains "Privacy & Security" or description contains "password")
-                keystroke "Apple@123"
-                delay 1
-                click (first button of pwWindow whose title is "Modify Settings")
-              end try
-            end tell
-            delay 5
-
-            -- Step 4: Handle "Quit & Reopen" dialog
-            if clickButtonInWindow("Quit", "RustDesk", 10) then
-              delay 10
-            else
-              -- If no dialog, maybe RustDesk didn't need to restart; just wait
-              delay 5
-            end if
-          APPLESCRIPT
-          echo "✅ Permission automation complete."
-
-      - name: Wait for RustDesk to restart and show main window
+      # --- Step 2: Open Screen Recording pane directly (ensures we are in the right place) ---
+      - name: Open Screen Recording preferences
         run: |
-          sleep 15
+          sudo -u vncuser open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenRecording"
+          sleep 5
+
+      # --- Step 3: Click the lock to enable changes ---
+      - name: Click lock and enter password
+        run: |
+          # Click lock icon (usually bottom-left, coordinates approx 100, 650 for 1024x768)
+          sudo -u vncuser cliclick c:100,650
+          sleep 2
+          # Type password using AppleScript (more reliable than cliclick for text)
+          sudo -u vncuser osascript -e 'tell application "System Events" to keystroke "Apple@123"' -e 'delay 1' -e 'keystroke return'
+          sleep 3
+
+      # --- Step 4: Find and click the checkbox next to RustDesk ---
+      - name: Enable RustDesk in Screen Recording list
+        run: |
+          # Take a screenshot to locate the checkbox position
+          sudo -u vncuser screencapture -x /tmp/sr_screen.png
+          # Use OCR to find "RustDesk" text and get its bounding box
+          cd /tmp
+          tesseract sr_screen.png stdout -l eng tsv 2>/dev/null > ocr.tsv
+          # Find line with "RustDesk"
+          RUSTDESK_LINE=$(grep "RustDesk" ocr.tsv | head -1)
+          if [ -n "$RUSTDESK_LINE" ]; then
+            LEFT=$(echo "$RUSTDESK_LINE" | awk '{print $7}')
+            TOP=$(echo "$RUSTDESK_LINE" | awk '{print $8}')
+            RIGHT=$(echo "$RUSTDESK_LINE" | awk '{print $9}')
+            BOTTOM=$(echo "$RUSTDESK_LINE" | awk '{print $10}')
+            # Checkbox is to the left of the text; estimate x as LEFT - 30, y as midpoint
+            CHECK_X=$((LEFT - 30))
+            CHECK_Y=$(( (TOP + BOTTOM) / 2 ))
+            echo "Clicking checkbox at ($CHECK_X, $CHECK_Y)"
+            sudo -u vncuser cliclick c:$CHECK_X,$CHECK_Y
+          else
+            # Fallback: click at approximate position (right side of window, mid-height)
+            echo "RustDesk text not found, using fallback coordinates"
+            sudo -u vncuser cliclick c:700,300
+          fi
+          sleep 3
+
+      # --- Step 5: Handle "Quit & Reopen" dialog if it appears ---
+      - name: Click "Quit & Reopen"
+        run: |
+          for i in {1..10}; do
+            if sudo -u vncuser osascript -e 'tell app "System Events" to exists (first window whose title contains "RustDesk" and description contains "quit")' 2>/dev/null; then
+              echo "Quit dialog found"
+              sudo -u vncuser cliclick c:512,400  # Click approximate center of button
+              break
+            fi
+            sleep 2
+          done
+          sleep 10
+
+      # --- Step 6: Now RustDesk should have permission; capture its main window ---
+      - name: Capture RustDesk main window
+        run: |
           # Bring RustDesk to front
           sudo -u vncuser osascript -e 'tell application "System Events" to tell process "RustDesk" to set frontmost to true' 2>/dev/null || true
-          sleep 2
-          # Take screenshot
+          sleep 5
           sudo -u vncuser screencapture -x /tmp/rustdesk_screen.png
           echo "✅ Screenshot captured"
 
