@@ -1,0 +1,171 @@
+name: macOS GUI Diagnostic
+on: workflow_dispatch
+
+jobs:
+  diagnose:
+    runs-on: macos-latest
+    steps:
+      - name: Install Tailscale
+        run: |
+          brew install tailscale
+          sudo tailscaled --tun=userspace-networking &
+          sleep 5
+          sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=github-macos-diagnostic
+          for i in {1..10}; do
+            IP=$(sudo tailscale ip -4 2>/dev/null || true)
+            if [ -n "$IP" ]; then
+              echo "TAILSCALE_IP=$IP" >> $GITHUB_ENV
+              echo "✅ Tailscale IP: $IP"
+              break
+            fi
+            sleep 5
+          done
+
+      - name: Create diagnostic user
+        run: |
+          sudo dscl . -create /Users/vncuser
+          sudo dscl . -create /Users/vncuser UserShell /bin/bash
+          sudo dscl . -create /Users/vncuser RealName "VNC User"
+          sudo dscl . -create /Users/vncuser UniqueID "510"
+          sudo dscl . -create /Users/vncuser PrimaryGroupID 20
+          sudo dscl . -create /Users/vncuser NFSHomeDirectory /Users/vncuser
+          sudo dscl . -passwd /Users/vncuser "Apple@123"
+          sudo dscl . -append /Groups/admin GroupMembership vncuser
+          sudo createhomedir -c -u vncuser
+          echo "✅ Created user: vncuser (password: Apple@123)"
+
+      - name: Collect system information
+        run: |
+          echo "===== SYSTEM INFO ====="
+          sw_vers
+          uname -a
+          system_profiler SPHardwareDataType SPDisplaysDataType SPSoftwareDataType
+          echo "===== DISPLAY IOREG ====="
+          ioreg -r -c "AppleDisplay" || true
+          ioreg -r -c "IOFramebuffer" || true
+          echo "===== LOADED KEXTs ====="
+          kextstat | grep -E "Display|Framebuffer|Graphics" || true
+          echo "===== PROCESSES ====="
+          ps aux | grep -E "WindowServer|Dock|Finder|loginwindow" || true
+          echo "===== LAUNCHCTL GUI SESSIONS ====="
+          sudo launchctl list | grep -i gui || true
+          sudo -u vncuser launchctl list | grep -i gui || true
+
+      - name: Attempt to start GUI session (method 1 - bootstrap Dock)
+        run: |
+          echo "Attempting to bootstrap Dock for vncuser..."
+          sudo -u vncuser launchctl bootstrap gui/$(id -u vncuser) /System/Library/LaunchAgents/com.apple.Dock.plist 2>&1 || true
+          sleep 5
+          sudo -u vncuser open -a Finder 2>&1 || true
+          sudo -u vncuser open /System/Library/CoreServices/SystemUIServer.app 2>&1 || true
+          echo "Processes after attempt:"
+          ps aux | grep -E "Dock|Finder" || true
+
+      - name: Attempt to start GUI session (method 2 - loginwindow directly)
+        run: |
+          echo "Attempting to launch loginwindow directly..."
+          sudo -u vncuser /System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow &
+          sleep 10
+          ps aux | grep loginwindow || true
+
+      - name: Attempt to start GUI session (method 3 - ScreenSaverEngine)
+        run: |
+          echo "Launching ScreenSaverEngine to force graphics..."
+          sudo -u vncuser open /System/Library/CoreServices/ScreenSaverEngine.app &
+          sleep 5
+          ps aux | grep ScreenSaverEngine || true
+
+      - name: Enable and test Apple Screen Sharing (VNC)
+        run: |
+          echo "Enabling Screen Sharing..."
+          sudo defaults write /var/db/launchd.db/com.apple.launchd/overrides.plist com.apple.screensharing -dict Disabled -bool false
+          sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>&1 || true
+          VNC_PASS="Apple@12"
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -activate -configure -access -on -users vncuser -privs -all \
+            -setVNCPassword -vncpasswd "$VNC_PASS" -restart -agent 2>&1 || true
+          sudo launchctl unload /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null
+          sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>&1 || true
+          sleep 5
+          echo "VNC server status:"
+          sudo lsof -i :5900 || echo "VNC not listening"
+          echo "VNC logs (if any):"
+          sudo cat /var/log/com.apple.screensharing.* 2>/dev/null || true
+
+      - name: Install and start NoMachine
+        run: |
+          brew install --cask nomachine || true
+          sudo launchctl load /Library/LaunchDaemons/com.nomachine.nxserver.plist 2>&1 || true
+          sleep 15
+          echo "NoMachine port status:"
+          sudo lsof -i :4000 || echo "NoMachine not listening"
+          echo "NoMachine logs:"
+          sudo cat "/Library/Application Support/NoMachine/var/log/nxserver.log" 2>/dev/null || true
+
+      - name: Attempt Xquartz + x11vnc (fallback)
+        run: |
+          brew install --cask xquartz || true
+          brew install x11vnc || true
+          # Start Xquartz
+          sudo -u vncuser /Applications/XQuartz.app/Contents/MacOS/Xquartz :1 &
+          sleep 10
+          # Prepare .vnc directory
+          sudo mkdir -p /Users/vncuser/.vnc
+          sudo chown vncuser:staff /Users/vncuser/.vnc
+          echo "Apple@12" | sudo -u vncuser x11vnc -storepasswd stdin /Users/vncuser/.vnc/passwd 2>/dev/null
+          # Start x11vnc
+          sudo -u vncuser x11vnc -display :1 -forever -shared -rfbauth /Users/vncuser/.vnc/passwd -rfbport 5901 -logfile /tmp/x11vnc.log &
+          sleep 5
+          sudo lsof -i :5901 || echo "x11vnc not listening"
+          cat /tmp/x11vnc.log 2>/dev/null || true
+
+      - name: Capture all logs for upload
+        run: |
+          mkdir -p diagnostics
+          {
+            echo "===== SYSTEM INFO ====="
+            sw_vers
+            uname -a
+            system_profiler SPHardwareDataType SPDisplaysDataType SPSoftwareDataType
+            echo "===== IOREG DISPLAY ====="
+            ioreg -r -c "AppleDisplay"
+            ioreg -r -c "IOFramebuffer"
+            echo "===== KEXTSTAT ====="
+            kextstat
+            echo "===== PROCESSES ====="
+            ps aux
+            echo "===== LAUNCHCTL GUI ====="
+            sudo launchctl list | grep -i gui
+            sudo -u vncuser launchctl list | grep -i gui
+            echo "===== VNC LOGS ====="
+            sudo cat /var/log/com.apple.screensharing.* 2>/dev/null
+            echo "===== NOMACHINE LOGS ====="
+            sudo cat "/Library/Application Support/NoMachine/var/log/nxserver.log" 2>/dev/null
+            echo "===== X11VNC LOG ====="
+            cat /tmp/x11vnc.log 2>/dev/null
+          } > diagnostics/runner-diagnostic.log
+          echo "Diagnostic log saved to diagnostics/runner-diagnostic.log"
+
+      - name: Upload diagnostic logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: runner-diagnostic-logs
+          path: diagnostics/
+
+      - name: Display connection info and keep alive
+        run: |
+          echo "========================================================="
+          echo "✅ DIAGNOSTIC RUN COMPLETE"
+          echo "========================================================="
+          echo "Tailscale IP: ${{ env.TAILSCALE_IP }}"
+          echo ""
+          echo "You can now try connecting:"
+          echo "  - VNC: ${{ env.TAILSCALE_IP }}:5900  (password Apple@12)"
+          echo "  - NoMachine: ${{ env.TAILSCALE_IP }}:4000 (user vncuser / Apple@123)"
+          echo ""
+          echo "If you see a black screen, the diagnostic logs (uploaded as artifact)"
+          echo "will help us understand why."
+          echo ""
+          echo "⏳ Job will stay alive for 6 hours for manual testing."
+          echo "========================================================="
+          while true; do sleep 3600; done
