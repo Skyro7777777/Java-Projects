@@ -2,7 +2,7 @@
 """
 Automate granting Screen Recording permission to RustDesk on macOS.
 Uses OCR (tesseract) to locate UI elements and cliclick to simulate clicks.
-This version uses absolute paths for external tools and handles binary output.
+Includes debug screenshots at each step.
 """
 
 import subprocess
@@ -20,6 +20,10 @@ from pathlib import Path
 USER_PASSWORD = "Apple@123"          # password for the user
 MAX_WAIT = 30                         # seconds to wait for each step
 SCREENSHOT_DIR = Path("/tmp")         # where to store temporary images
+DEBUG_DIR = SCREENSHOT_DIR / "debug_screenshots"
+
+# Create debug directory
+DEBUG_DIR.mkdir(exist_ok=True)
 
 # ----------------------------------------------------------------------
 # Locate required tools
@@ -52,7 +56,6 @@ def run_cmd(cmd, check=True, timeout=30, capture_output=False):
     """
     result = subprocess.run(cmd, shell=True, capture_output=capture_output, timeout=timeout)
     if check and result.returncode != 0:
-        # If capture_output is True, we have bytes; try to decode for error message
         err = result.stderr.decode('utf-8', errors='replace') if result.stderr else ''
         print(f"Command failed: {cmd}\nstderr: {err}")
         raise RuntimeError(f"Command failed: {cmd}")
@@ -64,17 +67,22 @@ def run_cmd(cmd, check=True, timeout=30, capture_output=False):
 
 def get_screen_size():
     """Return (width, height) of main display using system_profiler."""
-    # Use check=False because on headless runners this command may fail
     output, _ = run_cmd("system_profiler SPDisplaysDataType | grep Resolution", capture_output=True, check=False)
     match = re.search(r'(\d+) x (\d+)', output)
     if match:
         return int(match.group(1)), int(match.group(2))
-    # fallback if resolution not found (common on headless runners)
     return 1920, 1080
 
 def take_screenshot(path):
     """Take a screenshot of the entire screen using full path."""
     run_cmd(f"{SCREENCAPTURE_PATH} -x {path}")
+
+def debug_screenshot(name):
+    """Save a screenshot with a timestamp for debugging."""
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    path = DEBUG_DIR / f"{name}_{timestamp}.png"
+    take_screenshot(path)
+    print(f"Debug screenshot saved: {path}")
 
 def ocr_image(image_path):
     """
@@ -83,7 +91,6 @@ def ocr_image(image_path):
     """
     base = image_path.with_suffix('')
     tsv_path = base.with_suffix('.tsv')
-    # Run tesseract, do not capture stdout (TSV is written to file), capture stderr for debugging.
     cmd = f"{TESSERACT_PATH} {image_path} {base} tsv"
     stdout, stderr = run_cmd(cmd, check=False, capture_output=True)
     if not tsv_path.exists():
@@ -93,15 +100,14 @@ def ocr_image(image_path):
         return []
     with open(tsv_path) as f:
         lines = f.readlines()
-    tsv_path.unlink()  # clean up
+    tsv_path.unlink()
 
-    # Parse TSV: level,page_num,block_num,par_num,line_num,word_num,left,top,width,height,conf,text
     results = []
-    for line in lines[1:]:  # skip header
+    for line in lines[1:]:
         parts = line.strip().split('\t')
         if len(parts) < 12:
             continue
-        if parts[11] and int(parts[10]) > 30:  # confidence > 30
+        if parts[11] and int(parts[10]) > 30:
             results.append({
                 'text': parts[11],
                 'left': int(parts[6]),
@@ -112,7 +118,6 @@ def ocr_image(image_path):
     return results
 
 def find_text(ocr_results, target, case_sensitive=False):
-    """Return first result whose text contains target (case‑insensitive by default)."""
     target_lower = target.lower() if not case_sensitive else target
     for r in ocr_results:
         text = r['text'] if case_sensitive else r['text'].lower()
@@ -121,26 +126,21 @@ def find_text(ocr_results, target, case_sensitive=False):
     return None
 
 def click_at(x, y):
-    """Click at screen coordinates using cliclick."""
     run_cmd(f"{CLICLICK_PATH} c:{x},{y}")
 
 def click_center(ocr_result):
-    """Click at the center of an OCR bounding box."""
     x = ocr_result['left'] + ocr_result['width'] // 2
     y = ocr_result['top'] + ocr_result['height'] // 2
     click_at(x, y)
     time.sleep(1)
 
 def type_text(text):
-    """Type text using cliclick (must have focus)."""
     run_cmd(f"{CLICLICK_PATH} t:{text}")
 
 def press_key(key):
-    """Press a special key (return, tab, space) using cliclick."""
     run_cmd(f"{CLICLICK_PATH} kp:{key}")
 
 def wait_for_ocr(target, timeout=MAX_WAIT, interval=2):
-    """Keep taking screenshots until target text appears, return OCR result."""
     start = time.time()
     while time.time() - start < timeout:
         with tempfile.NamedTemporaryFile(suffix='.png', dir=SCREENSHOT_DIR, delete=False) as tmp:
@@ -155,7 +155,6 @@ def wait_for_ocr(target, timeout=MAX_WAIT, interval=2):
     return None
 
 def wait_and_click(target, timeout=MAX_WAIT):
-    """Wait for target text, then click its center. Return True if successful."""
     found = wait_for_ocr(target, timeout)
     if found:
         click_center(found)
@@ -169,40 +168,43 @@ def main():
     print("Starting Screen Recording permission automation...")
     width, height = get_screen_size()
     print(f"Screen resolution: {width}x{height}")
+    debug_screenshot("initial_state")
 
     # Step 1: Wait for RustDesk main window and click "Configure"
     print("Looking for 'Configure' button...")
     if not wait_and_click("Configure", timeout=20):
-        # Fallback: try clicking near bottom of screen (common RustDesk position)
+        # Improved fallback: bottom center (960, 810 on 1920x1080)
         print("OCR failed, using fallback coordinate for Configure.")
-        click_at(width // 2, int(height * 0.7))
+        click_at(width // 2, int(height * 0.75))
         time.sleep(2)
+        debug_screenshot("after_configure_fallback")
 
     # Step 2: System dialog: click "Open System Settings"
     print("Looking for 'Open System Settings'...")
     if not wait_and_click("Open System Settings", timeout=15):
-        print("Fallback: clicking center of screen.")
-        click_at(width // 2, height // 2)
+        print("Fallback: clicking left-center for Open System Settings.")
+        click_at(width // 2 - 200, height // 2)  # ~760,540
         time.sleep(2)
+        debug_screenshot("after_open_sys_settings_fallback")
 
     # Step 3: In System Settings, find RustDesk row and enable switch
     print("Waiting for System Settings to open...")
     time.sleep(5)
+    debug_screenshot("system_settings_opened")
 
-    # Look for "RustDesk" text in the table
     rustdesk_ocr = wait_for_ocr("RustDesk", timeout=20)
     if rustdesk_ocr:
-        # Click to the right of the text where the switch should be
         switch_x = rustdesk_ocr['left'] + rustdesk_ocr['width'] + 100
         switch_y = rustdesk_ocr['top'] + rustdesk_ocr['height'] // 2
         print(f"Clicking switch at ({switch_x}, {switch_y})")
         click_at(switch_x, switch_y)
         time.sleep(2)
+        debug_screenshot("after_switch_ocr")
     else:
-        # Fallback: try clicking where switch often is (right side, mid)
         print("RustDesk text not found, using fallback switch location.")
-        click_at(int(width * 0.8), int(height * 0.4))
+        click_at(int(width * 0.8), int(height * 0.4))  # ~1536,432
         time.sleep(2)
+        debug_screenshot("after_switch_fallback")
 
     # Step 4: If password prompt appears, enter password
     print("Checking for password prompt...")
@@ -212,7 +214,7 @@ def main():
         time.sleep(1)
         press_key("return")
         time.sleep(2)
-        # Click "Modify Settings" if present
+        debug_screenshot("after_password_entry")
         wait_and_click("Modify Settings", timeout=5)
 
     # Step 5: Handle "Quit & Reopen" dialog
@@ -220,16 +222,17 @@ def main():
     if wait_and_click("Quit", timeout=10):
         print("RustDesk quitting, waiting for restart...")
         time.sleep(10)
+        debug_screenshot("after_quit")
     else:
-        # Maybe already restarted?
         pass
 
     # Step 6: Wait for RustDesk to be back and take final screenshot
     print("Waiting for RustDesk to restart...")
     time.sleep(10)
-    screenshot_path = SCREENSHOT_DIR / "rustdesk_screen.png"
-    take_screenshot(screenshot_path)
-    print(f"Final screenshot saved to {screenshot_path}")
+    final_screenshot = SCREENSHOT_DIR / "rustdesk_screen.png"
+    take_screenshot(final_screenshot)
+    print(f"Final screenshot saved to {final_screenshot}")
+    debug_screenshot("final_state")
 
     print("Automation completed.")
 
