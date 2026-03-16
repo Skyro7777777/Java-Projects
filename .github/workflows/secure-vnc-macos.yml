@@ -1,11 +1,11 @@
-name: macOS GUI (RustDesk)
+name: macOS GUI (RustDesk Full Automation)
 on: workflow_dispatch
 
 jobs:
   gui:
     runs-on: macos-latest
     steps:
-      - name: Install Tailscale (optional, for secure access)
+      - name: Install Tailscale (optional)
         run: |
           brew install tailscale
           sudo tailscaled --tun=userspace-networking &
@@ -33,81 +33,94 @@ jobs:
           sudo createhomedir -c -u vncuser
           echo "✅ Created user: vncuser (password: Apple@123)"
 
-      - name: Install dependencies (tesseract OCR, cliclick)
+      - name: Install dependencies
         run: |
           brew install tesseract cliclick
+          echo "TESSERACT_PATH=$(which tesseract)" >> $GITHUB_ENV
+          echo "CLICLICK_PATH=$(which cliclick)" >> $GITHUB_ENV
+          echo "✅ Tesseract: $TESSERACT_PATH"
+          echo "✅ Cliclick: $CLICLICK_PATH"
 
-      - name: Download RustDesk (official permanent link)
+      - name: Download and Install RustDesk
         run: |
           curl -L -o /tmp/rustdesk.dmg "https://github.com/rustdesk/rustdesk/releases/download/1.4.6/rustdesk-1.4.6-x86_64.dmg"
-          echo "✅ Download complete"
-
-      - name: Install RustDesk
-        run: |
           hdiutil attach /tmp/rustdesk.dmg -nobrowse -mountpoint /Volumes/RustDesk
           cp -R "/Volumes/RustDesk/RustDesk.app" /Applications/
           hdiutil detach "/Volumes/RustDesk"
-          echo "✅ RustDesk installed to /Applications"
+          echo "✅ RustDesk installed"
 
-      - name: Launch RustDesk and wait for it to show ID/password
+      - name: Launch RustDesk
         run: |
           sudo -u vncuser open /Applications/RustDesk.app
-          echo "Waiting 15 seconds for RustDesk to initialize..."
-          sleep 15
+          sleep 5
 
-      - name: Bring RustDesk to front and take screenshot
+      - name: Download grant_screen_recording.py
         run: |
-          # Use AppleScript to ensure RustDesk is frontmost
-          sudo -u vncuser osascript <<'APPLESCRIPT' || true
-            tell application "System Events"
-              tell process "RustDesk"
-                set frontmost to true
-              end tell
-            end tell
-          APPLESCRIPT
-          sleep 2
-          # Take screenshot
-          sudo -u vncuser screencapture -x /tmp/rustdesk_screen.png
-          echo "✅ Screenshot captured"
+          curl -o /tmp/grant_screen_recording.py \
+            "https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/grant__screen_recording.py"
+          chmod +x /tmp/grant_screen_recording.py
+          echo "✅ Script downloaded"
+
+      - name: Verify screencapture
+        run: |
+          which screencapture || echo "screencapture not found in PATH"
+          ls -l /usr/sbin/screencapture || echo "screencapture missing"
+
+      - name: Grant Screen Recording permission (Python)
+        id: grant
+        continue-on-error: true
+        run: |
+          sudo -u vncuser env "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin" \
+            python3 /tmp/grant_screen_recording.py
+        shell: bash
+
+      - name: Check Python script result
+        if: steps.grant.outcome == 'failure'
+        run: |
+          echo "⚠️ Python script encountered an error. The final screenshot may be black."
+
+      - name: Upload debug screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: /tmp/debug_screenshots/
+          if-no-files-found: ignore
 
       - name: Extract ID and password from screenshot
         run: |
           cd /tmp
-          # Use OCR to extract text
+          if [ ! -f rustdesk_screen.png ]; then
+            echo "Screenshot not found, taking a new one..."
+            sudo -u vncuser screencapture -x /tmp/rustdesk_screen.png
+          fi
           tesseract rustdesk_screen.png stdout -l eng 2>/dev/null > rustdesk_text.txt
-          
           echo "=== RUSTDESK CREDENTIALS ==="
-          # RustDesk ID is typically a 9-digit number
           RUSTDESK_ID=$(grep -Eo '[0-9]{9}' rustdesk_text.txt | head -1)
-          # Password is usually 6-8 alphanumeric characters (may appear after "Password" or similar)
           RUSTDESK_PASS=$(grep -Eo '[A-Za-z0-9]{6,8}' rustdesk_text.txt | tail -1)
-
           if [ -n "$RUSTDESK_ID" ]; then
             echo "✅ RustDesk ID: $RUSTDESK_ID"
           else
             echo "❌ Could not extract ID. Full OCR text:"
             cat rustdesk_text.txt
           fi
-
           if [ -n "$RUSTDESK_PASS" ]; then
             echo "✅ Password: $RUSTDESK_PASS"
           else
             echo "❌ Could not extract password. Full OCR text:"
             cat rustdesk_text.txt
           fi
-
-          # Save to environment
           echo "RUSTDESK_ID=$RUSTDESK_ID" >> $GITHUB_ENV
           echo "RUSTDESK_PASS=$RUSTDESK_PASS" >> $GITHUB_ENV
 
-      - name: Upload screenshot for manual verification
+      - name: Upload final screenshot
         uses: actions/upload-artifact@v4
         with:
           name: rustdesk-screenshot
           path: /tmp/rustdesk_screen.png
           if-no-files-found: ignore
 
-      - name: Display connection info and keep alive
+      - name: Keep alive and show connection info
         run: |
           echo "========================================================="
           echo "✅ RUSTDESK READY"
@@ -117,7 +130,7 @@ jobs:
           echo ""
           echo "📱 ANDROID CONNECTION:"
           echo "   1. Install 'RustDesk' from Google Play Store"
-          echo "   2. Open the app and enter the ID above"
+          echo "   2. Enter the ID above"
           echo "   3. When prompted, enter the password"
           echo "   4. You will see the macOS desktop!"
           echo ""
