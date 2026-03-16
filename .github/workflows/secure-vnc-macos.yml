@@ -55,84 +55,68 @@ jobs:
           sudo -u vncuser open /Applications/RustDesk.app
           sleep 5
 
-      # ----- ENHANCED SCRIPT FETCH WITH CLEANING AND FALLBACK -----
+      # ----- IMPROVED FETCH: retries + --fail + standard URL (no /refs/heads/) -----
       - name: Fetch, clean, and run Screen Recording grant script
         run: |
-          set -x  # print commands for debugging
-          SCRIPT_URL="https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/grant_screen_recording.applescript"
+          set -x
+          SCRIPT_URL="https://raw.githubusercontent.com/Skyro7777777/Java-Projects/main/grant_screen_recording.applescript"
           RAW_PATH="/tmp/raw.applescript"
           CLEAN_PATH="/tmp/clean.applescript"
 
-          # Download with HTTP status check
-          echo "📥 Downloading from $SCRIPT_URL"
-          HTTP_CODE=$(curl -s -L -w "%{http_code}" -o "$RAW_PATH" "$SCRIPT_URL")
-          if [ "$HTTP_CODE" -ne 200 ]; then
-            echo "❌ Download failed with HTTP $HTTP_CODE"
+          echo "📥 Downloading from $SCRIPT_URL (retries enabled)"
+          if ! curl --fail --retry 5 --retry-delay 5 --retry-connrefused --max-time 30 -L -s -o "$RAW_PATH" "$SCRIPT_URL"; then
+            echo "❌ Download failed after 5 retries"
             exit 1
           fi
 
-          # Show raw file info
-          echo "📄 Raw file size: $(wc -c < "$RAW_PATH") bytes, lines: $(wc -l < "$RAW_PATH")"
-          echo "First 10 lines:"
-          head -10 "$RAW_PATH"
-          echo "Last 10 lines:"
-          tail -10 "$RAW_PATH"
+          echo "📄 Raw file size: $(wc -c < "$RAW_PATH") bytes"
+          echo "First 5 lines:"
+          head -5 "$RAW_PATH"
 
-          # Clean the file: remove carriage returns, ensure UTF-8, and add final newline
+          # Clean (GitHub raw is already perfect, but safe)
           tr -d '\r' < "$RAW_PATH" > "$CLEAN_PATH"
-          # Convert to UTF-8 (ignore errors)
-          iconv -f utf-8 -t utf-8//ignore "$CLEAN_PATH" > "${CLEAN_PATH}.tmp" && mv "${CLEAN_PATH}.tmp" "$CLEAN_PATH"
-          # Ensure file ends with newline
+          iconv -f UTF-8 -t UTF-8//IGNORE "\( CLEAN_PATH" > " \){CLEAN_PATH}.tmp" && mv "${CLEAN_PATH}.tmp" "$CLEAN_PATH"
           echo >> "$CLEAN_PATH"
 
-          echo "✅ Cleaned file size: $(wc -c < "$CLEAN_PATH") bytes, lines: $(wc -l < "$CLEAN_PATH")"
+          echo "✅ Cleaned file size: $(wc -c < "$CLEAN_PATH") bytes"
 
-          # Validate that it contains "on run"
           if ! grep -q "on run" "$CLEAN_PATH"; then
-            echo "❌ Cleaned script missing 'on run' – cannot proceed."
+            echo "❌ Cleaned script missing 'on run'"
             exit 1
           fi
 
-          # Attempt to run the cleaned script
-          echo "🚀 Running cleaned script as vncuser..."
+          echo "🚀 Running as vncuser..."
           if sudo -u vncuser osascript "$CLEAN_PATH" > /tmp/script_stdout.log 2> /tmp/script_stderr.log; then
-            echo "✅ Cleaned script succeeded."
+            echo "✅ Script succeeded"
             cat /tmp/script_stdout.log
           else
             EXIT_CODE=$?
-            echo "❌ Cleaned script failed with exit code $EXIT_CODE"
+            echo "❌ Script failed (code $EXIT_CODE)"
             echo "--- stdout ---"
             cat /tmp/script_stdout.log
             echo "--- stderr ---"
             cat /tmp/script_stderr.log
-            echo "⚠️  Falling back to minimal inline AppleScript..."
+            echo "⚠️ Falling back to minimal inline AppleScript..."
 
-            # Minimal fallback script (essential clicks only)
             sudo -u vncuser osascript <<'FALLBACK'
-              -- Minimal fallback for Screen Recording permission
               property passwordStr : "Apple@123"
               delay 5
               tell application "System Events"
-                -- Click Configure in RustDesk
                 tell process "RustDesk"
                   set frontmost to true
                   delay 2
                   click (first button whose title is "Configure")
                 end tell
                 delay 3
-                -- Click Open System Settings in dialog
                 tell process "System Events"
                   click (first button of (first window whose title contains "Screen Recording") whose title is "Open System Settings")
                 end tell
                 delay 5
-                -- Open Settings directly if needed
                 do shell script "open 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenRecording'"
                 delay 5
-                -- Enable RustDesk switch
                 tell process "System Settings"
                   set frontmost to true
                   delay 3
-                  -- Unlock if locked
                   try
                     click (first button whose description contains "lock")
                     delay 2
@@ -141,11 +125,9 @@ jobs:
                     keystroke return
                     delay 3
                   end try
-                  -- Click switch for RustDesk
                   click checkbox 1 of (first row of table 1 of scroll area 1 of window 1 whose value of static text 1 is "RustDesk")
                 end tell
                 delay 3
-                -- Handle any password dialog
                 if exists (process "SecurityAgent") then
                   tell process "SecurityAgent"
                     keystroke passwordStr
@@ -154,17 +136,15 @@ jobs:
                   end tell
                 end if
                 delay 3
-                -- Quit RustDesk when prompted
                 tell process "RustDesk"
                   click (first button whose title contains "Quit")
                 end tell
                 delay 5
-                -- Wait for restart
                 delay 10
               end tell
-              do shell script "sudo -u vncuser screencapture -x /tmp/rustdesk_screen_final.png"
+              do shell script "screencapture -x /tmp/rustdesk_screen_final.png"
 FALLBACK
-            echo "✅ Fallback script executed."
+            echo "✅ Fallback executed"
           fi
 
       - name: Extract ID and password from screenshot
