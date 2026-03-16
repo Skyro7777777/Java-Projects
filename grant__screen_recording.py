@@ -2,6 +2,7 @@
 """
 Automate granting Screen Recording permission to RustDesk on macOS.
 Uses OCR (tesseract) to locate UI elements and cliclick to simulate clicks.
+This version uses absolute paths for external tools.
 """
 
 import subprocess
@@ -10,6 +11,7 @@ import re
 import tempfile
 import os
 import sys
+import shutil
 from pathlib import Path
 
 # ----------------------------------------------------------------------
@@ -20,14 +22,38 @@ MAX_WAIT = 30                         # seconds to wait for each step
 SCREENSHOT_DIR = Path("/tmp")         # where to store temporary images
 
 # ----------------------------------------------------------------------
+# Locate required tools
+# ----------------------------------------------------------------------
+TESSERACT_PATH = shutil.which("tesseract")
+CLICLICK_PATH = shutil.which("cliclick")
+SCREENCAPTURE_PATH = shutil.which("screencapture")
+
+if not TESSERACT_PATH:
+    print("ERROR: tesseract not found in PATH. Please install tesseract.")
+    sys.exit(1)
+if not CLICLICK_PATH:
+    print("ERROR: cliclick not found in PATH. Please install cliclick.")
+    sys.exit(1)
+if not SCREENCAPTURE_PATH:
+    print("ERROR: screencapture not found in PATH. This is unusual on macOS.")
+    sys.exit(1)
+
+print(f"Using tesseract: {TESSERACT_PATH}")
+print(f"Using cliclick: {CLICLICK_PATH}")
+print(f"Using screencapture: {SCREENCAPTURE_PATH}")
+
+# ----------------------------------------------------------------------
 # Helper functions
 # ----------------------------------------------------------------------
-def run_cmd(cmd, check=True, timeout=30):
-    """Run a shell command and return stdout."""
+def run_cmd(cmd, check=True, timeout=30, capture_stderr=False):
+    """Run a shell command and return stdout. If capture_stderr, also return stderr."""
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
     if check and result.returncode != 0:
-        print(f"Command failed: {cmd}\n{result.stderr}")
+        print(f"Command failed: {cmd}")
+        print(f"stderr: {result.stderr}")
         raise RuntimeError(f"Command failed: {cmd}")
+    if capture_stderr:
+        return result.stdout.strip(), result.stderr.strip()
     return result.stdout.strip()
 
 def get_screen_size():
@@ -40,8 +66,8 @@ def get_screen_size():
     return 1920, 1080
 
 def take_screenshot(path):
-    """Take a screenshot of the entire screen."""
-    run_cmd(f"screencapture -x {path}")
+    """Take a screenshot of the entire screen using full path."""
+    run_cmd(f"{SCREENCAPTURE_PATH} -x {path}")
 
 def ocr_image(image_path):
     """
@@ -50,8 +76,11 @@ def ocr_image(image_path):
     """
     base = image_path.with_suffix('')
     tsv_path = base.with_suffix('.tsv')
-    run_cmd(f"tesseract {image_path} {base} tsv 2>/dev/null")
+    # Run tesseract and capture stderr for debugging
+    cmd = f"{TESSERACT_PATH} {image_path} {base} tsv 2>&1"
+    stdout, stderr = run_cmd(cmd, check=False, capture_stderr=True)
     if not tsv_path.exists():
+        print(f"Tesseract failed to create TSV. stderr: {stderr}")
         return []
     with open(tsv_path) as f:
         lines = f.readlines()
@@ -84,7 +113,7 @@ def find_text(ocr_results, target, case_sensitive=False):
 
 def click_at(x, y):
     """Click at screen coordinates using cliclick."""
-    run_cmd(f"cliclick c:{x},{y}")
+    run_cmd(f"{CLICLICK_PATH} c:{x},{y}")
 
 def click_center(ocr_result):
     """Click at the center of an OCR bounding box."""
@@ -95,11 +124,11 @@ def click_center(ocr_result):
 
 def type_text(text):
     """Type text using cliclick (must have focus)."""
-    run_cmd(f"cliclick t:{text}")
+    run_cmd(f"{CLICLICK_PATH} t:{text}")
 
 def press_key(key):
     """Press a special key (return, tab, space) using cliclick."""
-    run_cmd(f"cliclick kp:{key}")
+    run_cmd(f"{CLICLICK_PATH} kp:{key}")
 
 def wait_for_ocr(target, timeout=MAX_WAIT, interval=2):
     """Keep taking screenshots until target text appears, return OCR result."""
