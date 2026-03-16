@@ -64,7 +64,8 @@ def run_cmd(cmd, check=True, timeout=30, capture_output=False):
 
 def get_screen_size():
     """Return (width, height) of main display using system_profiler."""
-    output, _ = run_cmd("system_profiler SPDisplaysDataType | grep Resolution", capture_output=True)
+    # Use check=False because on headless runners this command may fail
+    output, _ = run_cmd("system_profiler SPDisplaysDataType | grep Resolution", capture_output=True, check=False)
     match = re.search(r'(\d+) x (\d+)', output)
     if match:
         return int(match.group(1)), int(match.group(2))
