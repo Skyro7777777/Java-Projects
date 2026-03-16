@@ -1,285 +1,220 @@
 #!/usr/bin/env python3
 """
-Automate granting Screen Recording permission to RustDesk on macOS.
-First clears any "bash" permission dialogs using AppleScript.
-Then uses OCR (tesseract) to locate UI elements and cliclick to simulate clicks.
-Includes debug screenshots at each step.
+Best-effort automation to accept macOS screen-recording permission dialogs
+for RustDesk. Uses AppleScript (System Events) to click dialog buttons and
+navigates System Settings. Keeps debug screenshots for diagnostics.
+
+Caveats: macOS TCC is designed to require explicit user approval. This script
+is a UI-automation best-effort and may not work in all runner images.
 """
 
-import subprocess
-import time
-import re
-import tempfile
-import os
-import sys
-import shutil
+import subprocess, time, tempfile, os, sys, shutil, re
 from pathlib import Path
 
-# ----------------------------------------------------------------------
-# Configuration
-# ----------------------------------------------------------------------
-USER_PASSWORD = "Apple@123"          # password for the user
-MAX_WAIT = 30                         # seconds to wait for each step
-SCREENSHOT_DIR = Path("/tmp")         # where to store temporary images
+USER_PASSWORD = "Apple@123"
+SCREENSHOT_DIR = Path("/tmp")
 DEBUG_DIR = SCREENSHOT_DIR / "debug_screenshots"
-
 DEBUG_DIR.mkdir(exist_ok=True)
 
-# ----------------------------------------------------------------------
-# Locate required tools
-# ----------------------------------------------------------------------
-TESSERACT_PATH = shutil.which("tesseract")
-CLICLICK_PATH = shutil.which("cliclick")
-SCREENCAPTURE_PATH = shutil.which("screencapture")
+TESSERACT = shutil.which("tesseract") or "/usr/bin/tesseract"
+CLICLICK = shutil.which("cliclick") or "/usr/local/bin/cliclick"
+SCREENCAPTURE = shutil.which("screencapture") or "/usr/sbin/screencapture"
 
-if not TESSERACT_PATH:
-    print("ERROR: tesseract not found in PATH. Please install tesseract.")
-    sys.exit(1)
-if not CLICLICK_PATH:
-    print("ERROR: cliclick not found in PATH. Please install cliclick.")
-    sys.exit(1)
-if not SCREENCAPTURE_PATH:
-    print("ERROR: screencapture not found in PATH. This is unusual on macOS.")
-    sys.exit(1)
+def run_cmd(cmd, capture=False, timeout=60):
+    if isinstance(cmd, list):
+        p = subprocess.run(cmd, capture_output=capture, text=True, timeout=timeout)
+    else:
+        p = subprocess.run(cmd, shell=True, capture_output=capture, text=True, timeout=timeout)
+    if capture:
+        return p.stdout.strip(), p.stderr.strip(), p.returncode
+    return p.returncode
 
-print(f"Using tesseract: {TESSERACT_PATH}")
-print(f"Using cliclick: {CLICLICK_PATH}")
-print(f"Using screencapture: {SCREENCAPTURE_PATH}")
-
-# ----------------------------------------------------------------------
-# Helper functions
-# ----------------------------------------------------------------------
-def run_cmd(cmd, check=True, timeout=30, capture_output=False):
-    result = subprocess.run(cmd, shell=True, capture_output=capture_output, timeout=timeout)
-    if check and result.returncode != 0:
-        err = result.stderr.decode('utf-8', errors='replace') if result.stderr else ''
-        print(f"Command failed: {cmd}\nstderr: {err}")
-        raise RuntimeError(f"Command failed: {cmd}")
-    if capture_output:
-        out = result.stdout.decode('utf-8', errors='replace').strip()
-        err = result.stderr.decode('utf-8', errors='replace').strip()
-        return out, err
-    return result.returncode
-
-def run_applescript(script):
-    """Run AppleScript and return output."""
-    cmd = ['osascript', '-e', script]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    return result.stdout.strip()
-
-def clear_bash_permission_dialogs():
-    """
-    Aggressively click any "Allow" button in any window, with priority on "bash" windows.
-    """
-    print("Checking for 'bash' permission dialogs...")
-    apple_script = '''
-    tell application "System Events"
-        repeat 30 times
-            set found to false
-            -- First try windows of process "bash"
-            try
-                if exists process "bash" then
-                    set bashWindows to every window of process "bash"
-                    repeat with win in bashWindows
-                        try
-                            if (exists button "Allow" of win) then
-                                click button "Allow" of win
-                                set found to true
-                                delay 2
-                            end if
-                        end try
-                    end repeat
-                end if
-            end try
-            -- If not found, try all windows
-            if not found then
-                try
-                    set allWindows to every window of every process
-                    repeat with win in allWindows
-                        try
-                            if (exists button "Allow" of win) then
-                                click button "Allow" of win
-                                set found to true
-                                delay 2
-                            end if
-                        end try
-                    end repeat
-                end try
-            end if
-            if not found then exit repeat
-            delay 1
-        end repeat
-    end tell
-    '''
-    run_applescript(apple_script)
-    print("Finished clearing bash dialogs (if any).")
-    # Wait a moment for dialogs to disappear
-    time.sleep(3)
-
-def get_screen_size():
-    output, _ = run_cmd("system_profiler SPDisplaysDataType | grep Resolution", capture_output=True, check=False)
-    match = re.search(r'(\d+) x (\d+)', output)
-    if match:
-        return int(match.group(1)), int(match.group(2))
-    return 1920, 1080
-
-def take_screenshot(path):
-    run_cmd(f"{SCREENCAPTURE_PATH} -x {path}")
-
-def debug_screenshot(name):
+def save_debug(name):
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     path = DEBUG_DIR / f"{name}_{timestamp}.png"
-    take_screenshot(path)
-    print(f"Debug screenshot saved: {path}")
+    try:
+        run_cmd(f'{SCREENCAPTURE} -x "{path}"')
+    except Exception as e:
+        print("Could not take debug screenshot:", e)
+    print("Saved debug:", path)
 
-def ocr_image(image_path):
-    base = image_path.with_suffix('')
-    tsv_path = base.with_suffix('.tsv')
-    cmd = f"{TESSERACT_PATH} {image_path} {base} tsv"
-    stdout, stderr = run_cmd(cmd, check=False, capture_output=True)
-    if not tsv_path.exists():
-        print(f"Tesseract failed to create TSV. stderr: {stderr}")
-        return []
-    with open(tsv_path) as f:
-        lines = f.readlines()
-    tsv_path.unlink()
+def run_applescript(script):
+    """Run an AppleScript string and return (stdout, stderr, rc)."""
+    proc = subprocess.run(['osascript', '-e', script], capture_output=True, text=True)
+    return proc.stdout.strip(), proc.stderr.strip(), proc.returncode
 
-    results = []
-    for line in lines[1:]:
-        parts = line.strip().split('\t')
-        if len(parts) < 12:
-            continue
-        if parts[11] and int(parts[10]) > 30:
-            results.append({
-                'text': parts[11],
-                'left': int(parts[6]),
-                'top': int(parts[7]),
-                'width': int(parts[8]),
-                'height': int(parts[9])
-            })
-    return results
+def click_all_permission_buttons(buttons=("Allow","Open System Settings","Open System Preferences")):
+    """
+    Loop through all processes and click named buttons on windows/sheets.
+    Returns True if any click was made.
+    """
+    apple = '''
+    tell application "System Events"
+      set clickedSomething to false
+      repeat with proc in (every process)
+        try
+          repeat with w in (every window of proc)
+            try
+              repeat with bname in {%s}
+                try
+                  set theButtons to (every button whose name is bname of w)
+                  repeat with bb in theButtons
+                    click bb
+                    set clickedSomething to true
+                    delay 0.6
+                  end repeat
+                end try
+              end repeat
+            end try
+          end repeat
+        end try
+      end repeat
+      return clickedSomething
+    end tell
+    ''' % (','.join('"%s"' % b for b in buttons))
+    out, err, rc = run_applescript(apple)
+    return (out.lower() == "true")
 
-def find_text(ocr_results, target, case_sensitive=False):
-    target_lower = target.lower() if not case_sensitive else target
-    for r in ocr_results:
-        text = r['text'] if case_sensitive else r['text'].lower()
-        if (case_sensitive and target in text) or (not case_sensitive and target_lower in text):
-            return r
-    return None
+def open_system_settings_and_select_privacy_screen_recording():
+    """
+    Try to open System Settings > Privacy & Security > Screen Recording
+    and find RustDesk row.
+    """
+    # try to launch System Settings and reveal Security & Privacy pane (works on many macOS versions)
+    reveal = 'tell application "System Settings" to activate'
+    run_applescript(reveal)
+    time.sleep(2)
+    save_debug("systemsettings_opened")
 
-def click_at(x, y):
-    run_cmd(f"{CLICLICK_PATH} c:{x},{y}")
+    # Try to click search field and type "RustDesk"
+    # Use System Events keystrokes to search and then press return to reveal row
+    search_script = '''
+    tell application "System Events"
+      tell process "System Settings"
+        try
+          set frontmost to true
+          -- try to find search field (varies by macOS version)
+          try
+            click (first text field of window 1)
+          on error
+            try
+              click (first text field whose description contains "search" of window 1)
+            end try
+          end try
+          delay 0.5
+        end try
+      end tell
+    end tell
+    '''
+    run_applescript(search_script)
+    time.sleep(0.4)
 
-def click_center(ocr_result):
-    x = ocr_result['left'] + ocr_result['width'] // 2
-    y = ocr_result['top'] + ocr_result['height'] // 2
-    click_at(x, y)
+    # type "RustDesk" via osascript keystrokes
+    run_cmd(['osascript','-e', 'tell application "System Events" to keystroke "RustDesk"'])
+    time.sleep(1)
+    save_debug("search_typed")
+
+    # Wait briefly for results to appear
+    time.sleep(2)
+    save_debug("after_search")
+
+def try_toggle_rustdesk_switch():
+    """
+    Attempt to find a row named RustDesk in System Settings and click the switch next to it.
+    This uses System Events UI scripting to search windows' UI elements.
+    """
+    apple = '''
+    tell application "System Events"
+      tell process "System Settings"
+        set frontmost to true
+        delay 0.5
+        try
+          repeat with w in (every window)
+            try
+              -- look for any static text containing RustDesk
+              set rustElems to (every static text of w whose value contains "RustDesk")
+              if (count of rustElems) > 0 then
+                repeat with r in rustElems
+                  try
+                    set bounds_r to (position of r)
+                    -- attempt to click a UI element to the right (a button or checkbox)
+                    -- find clickable elements in the same window and click the first one to the right
+                    set allBtns to (every button of w)
+                    if (count of allBtns) > 0 then
+                      click item 1 of allBtns
+                      return "clicked"
+                    end if
+                  end try
+                end repeat
+              end if
+            end try
+          end repeat
+        end try
+      end tell
+    end tell
+    return "done"
+    '''
+    out, err, rc = run_applescript(apple)
+    return out
+
+def fallback_click_coords():
+    """
+    Last-resort fallback: click near center-right where a permission toggle is commonly located.
+    Coordinates assume 1440x900-ish screen in runners; adapt as needed.
+    """
+    # try to get screen size and scale coordinates
+    out, err, rc = run_cmd("system_profiler SPDisplaysDataType | grep Resolution", capture=True)
+    width, height = 1440, 900
+    m = re.search(r'(\d+)\s*x\s*(\d+)', out)
+    if m:
+        width = int(m.group(1)); height = int(m.group(2))
+    # click a few candidate positions (right side where switches are)
+    cand = [(int(width*0.8), int(height*0.35)), (int(width*0.8), int(height*0.45)), (int(width*0.8), int(height*0.55))]
+    for x,y in cand:
+        try:
+          if shutil.which("cliclick"):
+            run_cmd(f'cliclick c:{x},{y}')
+          else:
+            # fallback to AppleScript clicking at coordinates
+            run_applescript(f'tell application "System Events" to click at {{{x},{y}}}')
+        except Exception as e:
+          print("fallback click error", e)
+        time.sleep(0.6)
+        save_debug(f"fallback_click_{x}_{y}")
+
+def main():
+    print("Starting permission automation (best-effort).")
+    save_debug("start")
+
+    # Step A: aggressively click "Allow" & "Open System Settings" buttons until they stop appearing
+    for i in range(12):
+        clicked = click_all_permission_buttons()
+        print(f"Pass {i+1}: clicked permission button? {clicked}")
+        save_debug(f"clear_pass_{i+1}")
+        if not clicked:
+            break
+        time.sleep(0.6)
+
+    # Step B: if any "Open System Settings" button remains, click it
+    # We attempted above; wait and then try AppleScript-specific clicks by exact button names in sheets
     time.sleep(1)
 
-def type_text(text):
-    run_cmd(f"{CLICLICK_PATH} t:{text}")
+    # Step C: open System Settings and search for RustDesk
+    open_system_settings_and_select_privacy_screen_recording()
+    time.sleep(1)
 
-def press_key(key):
-    run_cmd(f"{CLICLICK_PATH} kp:{key}")
+    # Step D: try to toggle RustDesk switch using UI scripting
+    res = try_toggle_rustdesk_switch()
+    print("try_toggle_rustdesk_switch result:", res)
+    save_debug("after_try_toggle")
 
-def wait_for_ocr(target, timeout=MAX_WAIT, interval=2):
-    start = time.time()
-    while time.time() - start < timeout:
-        with tempfile.NamedTemporaryFile(suffix='.png', dir=SCREENSHOT_DIR, delete=False) as tmp:
-            img_path = Path(tmp.name)
-        take_screenshot(img_path)
-        results = ocr_image(img_path)
-        img_path.unlink()
-        found = find_text(results, target)
-        if found:
-            return found
-        time.sleep(interval)
-    return None
+    # Step E: if the above didn't obviously toggle, fallback click coords
+    fallback_click_coords()
 
-def wait_and_click(target, timeout=MAX_WAIT):
-    found = wait_for_ocr(target, timeout)
-    if found:
-        click_center(found)
-        return True
-    return False
-
-# ----------------------------------------------------------------------
-# Main automation steps
-# ----------------------------------------------------------------------
-def main():
-    print("Starting Screen Recording permission automation...")
-
-    # Step 0: Aggressively clear any bash permission dialogs
-    clear_bash_permission_dialogs()
-
-    width, height = get_screen_size()
-    print(f"Screen resolution: {width}x{height}")
-    debug_screenshot("initial_state")
-
-    # Step 1: Wait for RustDesk main window and click "Configure"
-    print("Looking for 'Configure' button...")
-    if not wait_and_click("Configure", timeout=20):
-        print("OCR failed, using fallback coordinate for Configure.")
-        click_at(width // 2, int(height * 0.75))
-        time.sleep(2)
-        debug_screenshot("after_configure_fallback")
-
-    # Step 2: System dialog: click "Open System Settings"
-    print("Looking for 'Open System Settings'...")
-    if not wait_and_click("Open System Settings", timeout=15):
-        print("Fallback: clicking left-center for Open System Settings.")
-        click_at(width // 2 - 200, height // 2)
-        time.sleep(2)
-        debug_screenshot("after_open_sys_settings_fallback")
-
-    # Step 3: In System Settings, find RustDesk row and enable switch
-    print("Waiting for System Settings to open...")
-    time.sleep(5)
-    debug_screenshot("system_settings_opened")
-
-    rustdesk_ocr = wait_for_ocr("RustDesk", timeout=20)
-    if rustdesk_ocr:
-        switch_x = rustdesk_ocr['left'] + rustdesk_ocr['width'] + 100
-        switch_y = rustdesk_ocr['top'] + rustdesk_ocr['height'] // 2
-        print(f"Clicking switch at ({switch_x}, {switch_y})")
-        click_at(switch_x, switch_y)
-        time.sleep(2)
-        debug_screenshot("after_switch_ocr")
-    else:
-        print("RustDesk text not found, using fallback switch location.")
-        click_at(int(width * 0.8), int(height * 0.4))
-        time.sleep(2)
-        debug_screenshot("after_switch_fallback")
-
-    # Step 4: If password prompt appears, enter password
-    print("Checking for password prompt...")
-    if wait_for_ocr("Enter your password", timeout=5):
-        print("Password prompt detected, typing password...")
-        type_text(USER_PASSWORD)
-        time.sleep(1)
-        press_key("return")
-        time.sleep(2)
-        debug_screenshot("after_password_entry")
-        wait_and_click("Modify Settings", timeout=5)
-
-    # Step 5: Handle "Quit & Reopen" dialog
-    print("Looking for 'Quit' button in RustDesk...")
-    if wait_and_click("Quit", timeout=10):
-        print("RustDesk quitting, waiting for restart...")
-        time.sleep(10)
-        debug_screenshot("after_quit")
-    else:
-        pass
-
-    # Step 6: Wait for RustDesk to be back and take final screenshot
-    print("Waiting for RustDesk to restart...")
-    time.sleep(10)
-    final_screenshot = SCREENSHOT_DIR / "rustdesk_screen.png"
-    take_screenshot(final_screenshot)
-    print(f"Final screenshot saved to {final_screenshot}")
-    debug_screenshot("final_state")
-
-    print("Automation completed.")
+    # Step F: final screenshot and done
+    save_debug("final")
+    print("Done. Check debug screenshots in /tmp/debug_screenshots for details.")
+    print("If this fails, manual intervention or an MDM/profile that pre-approves screen-recording is required.")
 
 if __name__ == "__main__":
     main()
