@@ -55,15 +55,14 @@ jobs:
           sudo -u vncuser open /Applications/RustDesk.app
           sleep 5
 
-      # ----- FIXED FETCH: ultra-simple cleaning (no iconv, no &&, extra debug) -----
-      - name: Fetch, clean, and run Screen Recording grant script
+      # ----- BEST FETCH: no temp file for run (pipe directly) + full debug -----
+      - name: Fetch, validate, and run Screen Recording grant script
         run: |
           set -x
           SCRIPT_URL="https://raw.githubusercontent.com/Skyro7777777/Java-Projects/main/grant_screen_recording.applescript"
           RAW_PATH="/tmp/raw.applescript"
-          CLEAN_PATH="/tmp/clean.applescript"
 
-          rm -f "$RAW_PATH" "$CLEAN_PATH" /tmp/script_*.log
+          rm -f "$RAW_PATH" /tmp/script_*.log
 
           echo "📥 Downloading from $SCRIPT_URL"
           if ! curl --fail --retry 5 --retry-delay 5 --retry-connrefused --max-time 30 -L -s -o "$RAW_PATH" "$SCRIPT_URL"; then
@@ -72,24 +71,18 @@ jobs:
           fi
 
           echo "📄 Raw: $(wc -c < "$RAW_PATH") bytes, $(wc -l < "$RAW_PATH") lines"
-
-          # Minimal clean (GitHub raw is already perfect)
-          tr -d '\r' < "$RAW_PATH" > "$CLEAN_PATH"
-          echo >> "$CLEAN_PATH"
-
-          echo "✅ Cleaned: $(wc -c < "$CLEAN_PATH") bytes, $(wc -l < "$CLEAN_PATH") lines"
           echo "First 5 lines:"
-          head -5 "$CLEAN_PATH"
+          head -5 "$RAW_PATH"
           echo "Last 5 lines:"
-          tail -5 "$CLEAN_PATH"
+          tail -5 "$RAW_PATH"
 
-          if ! grep -q "on run" "$CLEAN_PATH"; then
+          if ! grep -q "on run" "$RAW_PATH"; then
             echo "❌ Missing 'on run'"
             exit 1
           fi
 
-          echo "🚀 Running as vncuser..."
-          if sudo -u vncuser osascript "$CLEAN_PATH" > /tmp/script_stdout.log 2> /tmp/script_stderr.log; then
+          echo "🚀 Running directly via pipe (no file corruption possible)..."
+          if cat "$RAW_PATH" | sudo -u vncuser osascript - > /tmp/script_stdout.log 2> /tmp/script_stderr.log; then
             echo "✅ Script succeeded"
             cat /tmp/script_stdout.log
           else
