@@ -36,7 +36,7 @@ jobs:
       - name: Install dependencies
         run: |
           brew install tesseract cliclick
-          # Verify installations and get full paths
+          # Verify installations and get full paths (for debugging)
           echo "TESSERACT_PATH=$(which tesseract)" >> $GITHUB_ENV
           echo "CLICLICK_PATH=$(which cliclick)" >> $GITHUB_ENV
           echo "✅ Tesseract: $TESSERACT_PATH"
@@ -60,21 +60,21 @@ jobs:
           sudo -u vncuser open /Applications/RustDesk.app
           sleep 5
 
-      # ----- Download the Python automation script -----
+      # ----- Download the Python automation script (make sure it's the improved version) -----
       - name: Download grant_screen_recording.py
         run: |
           curl -o /tmp/grant_screen_recording.py \
             "https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/grant__screen_recording.py"
+          chmod +x /tmp/grant_screen_recording.py
           echo "✅ Script downloaded"
 
-      # ----- Verify screencapture is available -----
+      # ----- Verify that screencapture is accessible -----
       - name: Verify screencapture
         run: |
           which screencapture || echo "screencapture not found in PATH"
           ls -l /usr/sbin/screencapture || echo "screencapture missing"
-        shell: bash
 
-      # ----- Run the Python script with proper PATH -----
+      # ----- Run the Python script with full PATH -----
       - name: Grant Screen Recording permission (Python)
         id: grant
         continue-on-error: true
