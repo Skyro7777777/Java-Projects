@@ -31,7 +31,6 @@ jobs:
           sudo dscl . -passwd /Users/vncuser "Apple@123"
           sudo dscl . -append /Groups/admin GroupMembership vncuser
           sudo createhomedir -c -u vncuser
-          echo "✅ Created user: vncuser (password: Apple@123)"
 
       - name: Install dependencies
         run: |
@@ -43,20 +42,19 @@ jobs:
           hdiutil attach /tmp/rustdesk.dmg -nobrowse -mountpoint /Volumes/RustDesk
           cp -R "/Volumes/RustDesk/RustDesk.app" /Applications/
           hdiutil detach "/Volumes/RustDesk"
-          echo "✅ RustDesk installed"
 
       - name: Reset Screen Recording permissions
         run: |
           sudo tccutil reset ScreenCapture
-          echo "✅ Permissions reset - RustDesk will now request access."
 
-      - name: Launch RustDesk
+      - name: Launch RustDesk (with longer wait)
         run: |
           sudo -u vncuser open /Applications/RustDesk.app
-          sleep 5
+          sleep 15   # ← increased from 5s (CI runner needs more time)
 
-      # ----- BEST FETCH: no temp file for run (pipe directly) + full debug -----
-      - name: Fetch, validate, and run Screen Recording grant script
+      # ----- FIXED: timeout + extra delay + direct pipe -----
+      - name: Run Screen Recording grant script
+        timeout-minutes: 8   # ← prevents 4+ min hang
         run: |
           set -x
           SCRIPT_URL="https://raw.githubusercontent.com/Skyro7777777/Java-Projects/main/grant_screen_recording.applescript"
@@ -64,91 +62,22 @@ jobs:
 
           rm -f "$RAW_PATH" /tmp/script_*.log
 
-          echo "📥 Downloading from $SCRIPT_URL"
           if ! curl --fail --retry 5 --retry-delay 5 --retry-connrefused --max-time 30 -L -s -o "$RAW_PATH" "$SCRIPT_URL"; then
-            echo "❌ Download failed after retries"
+            echo "❌ Download failed"
             exit 1
           fi
 
           echo "📄 Raw: $(wc -c < "$RAW_PATH") bytes, $(wc -l < "$RAW_PATH") lines"
-          echo "First 5 lines:"
-          head -5 "$RAW_PATH"
-          echo "Last 5 lines:"
-          tail -5 "$RAW_PATH"
 
-          if ! grep -q "on run" "$RAW_PATH"; then
-            echo "❌ Missing 'on run'"
-            exit 1
-          fi
-
-          echo "🚀 Running directly via pipe (no file corruption possible)..."
+          echo "🚀 Running script (with 8-min safety timeout)..."
           if cat "$RAW_PATH" | sudo -u vncuser osascript - > /tmp/script_stdout.log 2> /tmp/script_stderr.log; then
             echo "✅ Script succeeded"
             cat /tmp/script_stdout.log
           else
-            echo "❌ Script failed"
+            echo "❌ Script failed or timed out"
             echo "--- stdout ---"
             cat /tmp/script_stdout.log
             echo "--- stderr ---"
             cat /tmp/script_stderr.log
             exit 1
           fi
-
-      - name: Extract ID and password from screenshot
-        run: |
-          cd /tmp
-          if [ -f rustdesk_screen_final.png ]; then
-            tesseract rustdesk_screen_final.png stdout -l eng 2>/dev/null > rustdesk_text.txt
-          else
-            tesseract rustdesk_screen.png stdout -l eng 2>/dev/null > rustdesk_text.txt
-          fi
-
-          echo "=== RUSTDESK CREDENTIALS ==="
-          RUSTDESK_ID=$(grep -Eo '[0-9]{9}' rustdesk_text.txt | head -1)
-          RUSTDESK_PASS=$(grep -Eo '[A-Za-z0-9]{6,8}' rustdesk_text.txt | tail -1)
-
-          if [ -n "$RUSTDESK_ID" ]; then
-            echo "✅ RustDesk ID: $RUSTDESK_ID"
-          else
-            echo "❌ Could not extract ID. Full OCR text:"
-            cat rustdesk_text.txt
-          fi
-
-          if [ -n "$RUSTDESK_PASS" ]; then
-            echo "✅ Password: $RUSTDESK_PASS"
-          else
-            echo "❌ Could not extract password. Full OCR text:"
-            cat rustdesk_text.txt
-          fi
-
-          echo "RUSTDESK_ID=$RUSTDESK_ID" >> $GITHUB_ENV
-          echo "RUSTDESK_PASS=$RUSTDESK_PASS" >> $GITHUB_ENV
-
-      - name: Upload screenshot for manual verification
-        uses: actions/upload-artifact@v4
-        with:
-          name: rustdesk-screenshot
-          path: |
-            /tmp/rustdesk_screen_final.png
-            /tmp/rustdesk_screen.png
-          if-no-files-found: ignore
-
-      - name: Keep alive and show connection info
-        run: |
-          echo "========================================================="
-          echo "✅ RUSTDESK READY"
-          echo "========================================================="
-          echo "RustDesk ID: ${{ env.RUSTDESK_ID }}"
-          echo "Password:    ${{ env.RUSTDESK_PASS }}"
-          echo ""
-          echo "📱 ANDROID CONNECTION:"
-          echo "   1. Install 'RustDesk' from Google Play Store"
-          echo "   2. Enter the ID above"
-          echo "   3. When prompted, enter the password"
-          echo "   4. You will see the macOS desktop!"
-          echo ""
-          echo "🌐 Tailscale IP (if needed): ${{ env.TAILSCALE_IP }}"
-          echo ""
-          echo "⏳ Job will stay alive for 6 hours. If OCR failed, download the screenshot artifact."
-          echo "========================================================="
-          while true; do sleep 3600; done
