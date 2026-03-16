@@ -54,156 +54,100 @@ jobs:
 
 
       - name: Run Screen Recording grant script (FULL INLINE)
-        timeout-minutes: 8
-        run: |
-          echo "=== STARTING INLINE APPLESCRIPT ==="
-
-          sudo -u vncuser osascript > /tmp/script_stdout.log 2> /tmp/script_stderr.log <<'APPLESCRIPT'
-          -- grant_screen_recording.applescript
-          -- Automates granting Screen Recording permission to RustDesk on macOS
-
-          property passwordStr : "Apple@123"
-          property timeoutSec : 30
-          property shortDelay : 1
-          property mediumDelay : 2
-          property longDelay : 5
-
-
-          on waitForWindow(processName, windowText, maxWait)
-
-              set startTime to current date
-
-              repeat while (current date) - startTime < maxWait
-
-                  tell application "System Events"
-
-                      if exists (process processName) then
-
-                          tell process processName
-
-                              if exists (first window whose title contains windowText) then
-
-                                  return true
-
-                              end if
-
-                          end tell
-
-                      end if
-
-                  end tell
-
-                  delay 0.5
-
-              end repeat
-
-              return false
-
-          end waitForWindow
-
-
-
-          on clickButton(processName, windowTitle, buttonTitle, maxWait)
-
-              set startTime to current date
-
-              repeat while (current date) - startTime < maxWait
-
-                  tell application "System Events"
-
-                      if exists (process processName) then
-
-                          tell process processName
-
-                              if exists (first window whose title contains windowTitle) then
-
-                                  set w to first window whose title contains windowTitle
-
-                                  if exists (first button of w whose title contains buttonTitle) then
-
-                                      click (first button of w whose title contains buttonTitle)
-
-                                      return true
-
-                                  end if
-
-                              end if
-
-                          end tell
-
-                      end if
-
-                  end tell
-
-                  delay 0.5
-
-              end repeat
-
-              return false
-
-          end clickButton
-
-
-
-          on run
-
-              log "STEP 1"
-
-              if not waitForWindow("RustDesk", "RustDesk", timeoutSec) then
-
-                  error "RustDesk window not found"
-
-              end if
-
-
-              tell application "System Events"
-
-                  tell process "RustDesk"
-
-                      set frontmost to true
-
-                      delay shortDelay
-
-                  end tell
-
-              end tell
-
-
-              delay longDelay
-
-              log "STEP 2"
-
-
-              tell application "System Events"
-
-                  tell process "System Settings"
-
-                      set frontmost to true
-
-                  end tell
-
-              end tell
-
-
-              delay longDelay
-
-
-              log "STEP 3 screenshot"
-
-
-              do shell script "sudo -u vncuser screencapture -x /tmp/rustdesk_screen_final.png"
-
-
-              return "SUCCESS"
-
-
-          end run
-
-          APPLESCRIPT
-
-
-          echo "=== APPLESCRIPT FINISHED ==="
-          echo "--- STDOUT ---"
-          cat /tmp/script_stdout.log
-          echo "--- STDERR ---"
-          cat /tmp/script_stderr.log
+  timeout-minutes: 8
+  run: |
+    echo "=== STARTING INLINE APPLESCRIPT ==="
+
+    # Run osascript and capture output; if it fails, show stderr and exit
+    sudo -u vncuser osascript > /tmp/script_stdout.log 2> /tmp/script_stderr.log <<'APPLESCRIPT'
+-- grant_screen_recording.applescript
+-- Automates granting Screen Recording permission to RustDesk on macOS
+
+property passwordStr : "Apple@123"
+property timeoutSec : 30
+property shortDelay : 1
+property mediumDelay : 2
+property longDelay : 5
+
+on waitForWindow(processName, windowText, maxWait)
+    set startTime to current date
+    repeat while (current date) - startTime < maxWait
+        tell application "System Events"
+            if exists (process processName) then
+                tell process processName
+                    if exists (first window whose title contains windowText) then
+                        return true
+                    end if
+                end tell
+            end if
+        end tell
+        delay 0.5
+    end repeat
+    return false
+end waitForWindow
+
+on clickButton(processName, windowTitle, buttonTitle, maxWait)
+    set startTime to current date
+    repeat while (current date) - startTime < maxWait
+        tell application "System Events"
+            if exists (process processName) then
+                tell process processName
+                    if exists (first window whose title contains windowTitle) then
+                        set w to first window whose title contains windowTitle
+                        if exists (first button of w whose title contains buttonTitle) then
+                            click (first button of w whose title contains buttonTitle)
+                            return true
+                        end if
+                    end if
+                end tell
+            end if
+        end tell
+        delay 0.5
+    end repeat
+    return false
+end clickButton
+
+on run
+    log "STEP 1"
+    if not waitForWindow("RustDesk", "RustDesk", timeoutSec) then
+        error "RustDesk window not found"
+    end if
+
+    tell application "System Events"
+        tell process "RustDesk"
+            set frontmost to true
+            delay shortDelay
+        end tell
+    end tell
+
+    delay longDelay
+    log "STEP 2"
+
+    tell application "System Events"
+        tell process "System Settings"
+            set frontmost to true
+        end tell
+    end tell
+
+    delay longDelay
+
+    log "STEP 3 screenshot"
+
+    do shell script "sudo -u vncuser screencapture -x /tmp/rustdesk_screen_final.png"
+
+    return "SUCCESS"
+end run
+APPLESCRIPT
+
+    # Capture exit status of osascript
+    EXIT_CODE=$?
+    echo "=== APPLESCRIPT FINISHED (exit code $EXIT_CODE) ==="
+    echo "--- STDOUT ---"
+    cat /tmp/script_stdout.log
+    echo "--- STDERR ---"
+    cat /tmp/script_stderr.log
+
+    # If osascript failed, exit the step with the same code
+    if [ $EXIT_CODE -ne 0 ]; then
+        exit $EXIT_CODE
+    fi
