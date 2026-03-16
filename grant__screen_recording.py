@@ -2,7 +2,7 @@
 """
 Automate granting Screen Recording permission to RustDesk on macOS.
 Uses OCR (tesseract) to locate UI elements and cliclick to simulate clicks.
-This version uses absolute paths for external tools.
+This version uses absolute paths for external tools and handles binary output.
 """
 
 import subprocess
@@ -45,20 +45,26 @@ print(f"Using screencapture: {SCREENCAPTURE_PATH}")
 # ----------------------------------------------------------------------
 # Helper functions
 # ----------------------------------------------------------------------
-def run_cmd(cmd, check=True, timeout=30, capture_stderr=False):
-    """Run a shell command and return stdout. If capture_stderr, also return stderr."""
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+def run_cmd(cmd, check=True, timeout=30, capture_output=False):
+    """
+    Run a shell command. If capture_output=True, return (stdout, stderr) as strings
+    with errors replaced. Otherwise just return the return code (or raise).
+    """
+    result = subprocess.run(cmd, shell=True, capture_output=capture_output, timeout=timeout)
     if check and result.returncode != 0:
-        print(f"Command failed: {cmd}")
-        print(f"stderr: {result.stderr}")
+        # If capture_output is True, we have bytes; try to decode for error message
+        err = result.stderr.decode('utf-8', errors='replace') if result.stderr else ''
+        print(f"Command failed: {cmd}\nstderr: {err}")
         raise RuntimeError(f"Command failed: {cmd}")
-    if capture_stderr:
-        return result.stdout.strip(), result.stderr.strip()
-    return result.stdout.strip()
+    if capture_output:
+        out = result.stdout.decode('utf-8', errors='replace').strip()
+        err = result.stderr.decode('utf-8', errors='replace').strip()
+        return out, err
+    return result.returncode
 
 def get_screen_size():
     """Return (width, height) of main display using system_profiler."""
-    output = run_cmd("system_profiler SPDisplaysDataType | grep Resolution", check=False)
+    output, _ = run_cmd("system_profiler SPDisplaysDataType | grep Resolution", capture_output=True)
     match = re.search(r'(\d+) x (\d+)', output)
     if match:
         return int(match.group(1)), int(match.group(2))
@@ -76,11 +82,13 @@ def ocr_image(image_path):
     """
     base = image_path.with_suffix('')
     tsv_path = base.with_suffix('.tsv')
-    # Run tesseract and capture stderr for debugging
-    cmd = f"{TESSERACT_PATH} {image_path} {base} tsv 2>&1"
-    stdout, stderr = run_cmd(cmd, check=False, capture_stderr=True)
+    # Run tesseract, do not capture stdout (TSV is written to file), capture stderr for debugging.
+    cmd = f"{TESSERACT_PATH} {image_path} {base} tsv"
+    stdout, stderr = run_cmd(cmd, check=False, capture_output=True)
     if not tsv_path.exists():
         print(f"Tesseract failed to create TSV. stderr: {stderr}")
+        if stdout:
+            print(f"stdout: {stdout}")
         return []
     with open(tsv_path) as f:
         lines = f.readlines()
