@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Automate granting Screen Recording permission to RustDesk on macOS.
-Uses OCR (tesseract) to locate UI elements and cliclick to simulate clicks.
+First clears any "bash" permission dialogs using AppleScript.
+Then uses OCR (tesseract) to locate UI elements and cliclick to simulate clicks.
 Includes debug screenshots at each step.
 """
 
@@ -22,7 +23,6 @@ MAX_WAIT = 30                         # seconds to wait for each step
 SCREENSHOT_DIR = Path("/tmp")         # where to store temporary images
 DEBUG_DIR = SCREENSHOT_DIR / "debug_screenshots"
 
-# Create debug directory
 DEBUG_DIR.mkdir(exist_ok=True)
 
 # ----------------------------------------------------------------------
@@ -50,10 +50,7 @@ print(f"Using screencapture: {SCREENCAPTURE_PATH}")
 # Helper functions
 # ----------------------------------------------------------------------
 def run_cmd(cmd, check=True, timeout=30, capture_output=False):
-    """
-    Run a shell command. If capture_output=True, return (stdout, stderr) as strings
-    with errors replaced. Otherwise just return the return code (or raise).
-    """
+    """Run a shell command."""
     result = subprocess.run(cmd, shell=True, capture_output=capture_output, timeout=timeout)
     if check and result.returncode != 0:
         err = result.stderr.decode('utf-8', errors='replace') if result.stderr else ''
@@ -65,6 +62,40 @@ def run_cmd(cmd, check=True, timeout=30, capture_output=False):
         return out, err
     return result.returncode
 
+def run_applescript(script):
+    """Run AppleScript and return output."""
+    cmd = ['osascript', '-e', script]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    return result.stdout.strip()
+
+def clear_bash_permission_dialogs():
+    """
+    Use AppleScript to click "Allow" on any "bash" permission dialogs.
+    This does not require screen recording permission.
+    """
+    print("Checking for 'bash' permission dialogs...")
+    apple_script = '''
+    repeat 10 times
+        tell application "System Events"
+            set bashWindows to every window of (every process whose name contains "bash")
+            repeat with win in bashWindows
+                try
+                    if (name of win contains "bash") then
+                        tell win
+                            set allowButton to first button whose title contains "Allow"
+                            click allowButton
+                            delay 1
+                        end tell
+                    end if
+                end try
+            end repeat
+        end tell
+        delay 1
+    end repeat
+    '''
+    run_applescript(apple_script)
+    print("Finished clearing bash dialogs (if any).")
+
 def get_screen_size():
     """Return (width, height) of main display using system_profiler."""
     output, _ = run_cmd("system_profiler SPDisplaysDataType | grep Resolution", capture_output=True, check=False)
@@ -74,29 +105,23 @@ def get_screen_size():
     return 1920, 1080
 
 def take_screenshot(path):
-    """Take a screenshot of the entire screen using full path."""
+    """Take a screenshot using full path."""
     run_cmd(f"{SCREENCAPTURE_PATH} -x {path}")
 
 def debug_screenshot(name):
-    """Save a screenshot with a timestamp for debugging."""
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     path = DEBUG_DIR / f"{name}_{timestamp}.png"
     take_screenshot(path)
     print(f"Debug screenshot saved: {path}")
 
 def ocr_image(image_path):
-    """
-    Run tesseract on image, return list of dicts with text, bbox.
-    Uses tesseract TSV output.
-    """
+    """Run tesseract on image, return list of dicts with text, bbox."""
     base = image_path.with_suffix('')
     tsv_path = base.with_suffix('.tsv')
     cmd = f"{TESSERACT_PATH} {image_path} {base} tsv"
     stdout, stderr = run_cmd(cmd, check=False, capture_output=True)
     if not tsv_path.exists():
         print(f"Tesseract failed to create TSV. stderr: {stderr}")
-        if stdout:
-            print(f"stdout: {stdout}")
         return []
     with open(tsv_path) as f:
         lines = f.readlines()
@@ -166,6 +191,10 @@ def wait_and_click(target, timeout=MAX_WAIT):
 # ----------------------------------------------------------------------
 def main():
     print("Starting Screen Recording permission automation...")
+
+    # Step 0: Clear any bash permission dialogs using AppleScript
+    clear_bash_permission_dialogs()
+
     width, height = get_screen_size()
     print(f"Screen resolution: {width}x{height}")
     debug_screenshot("initial_state")
@@ -183,7 +212,7 @@ def main():
     print("Looking for 'Open System Settings'...")
     if not wait_and_click("Open System Settings", timeout=15):
         print("Fallback: clicking left-center for Open System Settings.")
-        click_at(width // 2 - 200, height // 2)  # ~760,540
+        click_at(width // 2 - 200, height // 2)
         time.sleep(2)
         debug_screenshot("after_open_sys_settings_fallback")
 
@@ -202,7 +231,7 @@ def main():
         debug_screenshot("after_switch_ocr")
     else:
         print("RustDesk text not found, using fallback switch location.")
-        click_at(int(width * 0.8), int(height * 0.4))  # ~1536,432
+        click_at(int(width * 0.8), int(height * 0.4))
         time.sleep(2)
         debug_screenshot("after_switch_fallback")
 
