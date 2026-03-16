@@ -55,7 +55,7 @@ jobs:
           sudo -u vncuser open /Applications/RustDesk.app
           sleep 5
 
-      # ----- IMPROVED FETCH + CLEAN (no fallback) -----
+      # ----- FIXED FETCH: ultra-simple cleaning (no iconv, no &&, extra debug) -----
       - name: Fetch, clean, and run Screen Recording grant script
         run: |
           set -x
@@ -63,25 +63,28 @@ jobs:
           RAW_PATH="/tmp/raw.applescript"
           CLEAN_PATH="/tmp/clean.applescript"
 
-          echo "📥 Downloading from $SCRIPT_URL (retries enabled)"
+          rm -f "$RAW_PATH" "$CLEAN_PATH" /tmp/script_*.log
+
+          echo "📥 Downloading from $SCRIPT_URL"
           if ! curl --fail --retry 5 --retry-delay 5 --retry-connrefused --max-time 30 -L -s -o "$RAW_PATH" "$SCRIPT_URL"; then
-            echo "❌ Download failed after 5 retries"
+            echo "❌ Download failed after retries"
             exit 1
           fi
 
-          echo "📄 Raw file size: $(wc -c < "$RAW_PATH") bytes"
-          echo "First 5 lines:"
-          head -5 "$RAW_PATH"
+          echo "📄 Raw: $(wc -c < "$RAW_PATH") bytes, $(wc -l < "$RAW_PATH") lines"
 
-          # Clean (GitHub raw is perfect)
+          # Minimal clean (GitHub raw is already perfect)
           tr -d '\r' < "$RAW_PATH" > "$CLEAN_PATH"
-          iconv -f UTF-8 -t UTF-8//IGNORE "\( CLEAN_PATH" > " \){CLEAN_PATH}.tmp" && mv "${CLEAN_PATH}.tmp" "$CLEAN_PATH"
           echo >> "$CLEAN_PATH"
 
-          echo "✅ Cleaned file size: $(wc -c < "$CLEAN_PATH") bytes"
+          echo "✅ Cleaned: $(wc -c < "$CLEAN_PATH") bytes, $(wc -l < "$CLEAN_PATH") lines"
+          echo "First 5 lines:"
+          head -5 "$CLEAN_PATH"
+          echo "Last 5 lines:"
+          tail -5 "$CLEAN_PATH"
 
           if ! grep -q "on run" "$CLEAN_PATH"; then
-            echo "❌ Cleaned script missing 'on run'"
+            echo "❌ Missing 'on run'"
             exit 1
           fi
 
@@ -90,7 +93,7 @@ jobs:
             echo "✅ Script succeeded"
             cat /tmp/script_stdout.log
           else
-            echo "❌ Script failed (see logs below)"
+            echo "❌ Script failed"
             echo "--- stdout ---"
             cat /tmp/script_stdout.log
             echo "--- stderr ---"
