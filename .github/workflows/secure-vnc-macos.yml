@@ -55,7 +55,7 @@ jobs:
           sudo -u vncuser open /Applications/RustDesk.app
           sleep 5
 
-      # ----- IMPROVED FETCH: retries + --fail + standard URL (no /refs/heads/) -----
+      # ----- IMPROVED FETCH + CLEAN (no fallback) -----
       - name: Fetch, clean, and run Screen Recording grant script
         run: |
           set -x
@@ -73,7 +73,7 @@ jobs:
           echo "First 5 lines:"
           head -5 "$RAW_PATH"
 
-          # Clean (GitHub raw is already perfect, but safe)
+          # Clean (GitHub raw is perfect)
           tr -d '\r' < "$RAW_PATH" > "$CLEAN_PATH"
           iconv -f UTF-8 -t UTF-8//IGNORE "\( CLEAN_PATH" > " \){CLEAN_PATH}.tmp" && mv "${CLEAN_PATH}.tmp" "$CLEAN_PATH"
           echo >> "$CLEAN_PATH"
@@ -90,61 +90,12 @@ jobs:
             echo "✅ Script succeeded"
             cat /tmp/script_stdout.log
           else
-            EXIT_CODE=$?
-            echo "❌ Script failed (code $EXIT_CODE)"
+            echo "❌ Script failed (see logs below)"
             echo "--- stdout ---"
             cat /tmp/script_stdout.log
             echo "--- stderr ---"
             cat /tmp/script_stderr.log
-            echo "⚠️ Falling back to minimal inline AppleScript..."
-
-            sudo -u vncuser osascript <<'FALLBACK'
-              property passwordStr : "Apple@123"
-              delay 5
-              tell application "System Events"
-                tell process "RustDesk"
-                  set frontmost to true
-                  delay 2
-                  click (first button whose title is "Configure")
-                end tell
-                delay 3
-                tell process "System Events"
-                  click (first button of (first window whose title contains "Screen Recording") whose title is "Open System Settings")
-                end tell
-                delay 5
-                do shell script "open 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenRecording'"
-                delay 5
-                tell process "System Settings"
-                  set frontmost to true
-                  delay 3
-                  try
-                    click (first button whose description contains "lock")
-                    delay 2
-                    keystroke passwordStr
-                    delay 1
-                    keystroke return
-                    delay 3
-                  end try
-                  click checkbox 1 of (first row of table 1 of scroll area 1 of window 1 whose value of static text 1 is "RustDesk")
-                end tell
-                delay 3
-                if exists (process "SecurityAgent") then
-                  tell process "SecurityAgent"
-                    keystroke passwordStr
-                    delay 1
-                    click (first button whose title is "Modify Settings")
-                  end tell
-                end if
-                delay 3
-                tell process "RustDesk"
-                  click (first button whose title contains "Quit")
-                end tell
-                delay 5
-                delay 10
-              end tell
-              do shell script "screencapture -x /tmp/rustdesk_screen_final.png"
-FALLBACK
-            echo "✅ Fallback executed"
+            exit 1
           fi
 
       - name: Extract ID and password from screenshot
