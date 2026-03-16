@@ -1,20 +1,24 @@
 name: macOS GUI (RustDesk Full Automation)
-
 on: workflow_dispatch
 
 jobs:
   gui:
     runs-on: macos-latest
-
     steps:
-
       - name: Install Tailscale (optional)
         run: |
           brew install tailscale
           sudo tailscaled --tun=userspace-networking &
           sleep 5
           sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=github-macos-rustdesk || true
-
+          for i in {1..5}; do
+            IP=$(sudo tailscale ip -4 2>/dev/null || echo "unknown")
+            if [ "$IP" != "unknown" ]; then
+              echo "TAILSCALE_IP=$IP" >> $GITHUB_ENV
+              break
+            fi
+            sleep 5
+          done
 
       - name: Create user vncuser with password Apple@123
         run: |
@@ -27,127 +31,102 @@ jobs:
           sudo dscl . -passwd /Users/vncuser "Apple@123"
           sudo dscl . -append /Groups/admin GroupMembership vncuser
           sudo createhomedir -c -u vncuser
-
+          echo "✅ Created user: vncuser (password: Apple@123)"
 
       - name: Install dependencies
         run: |
           brew install tesseract cliclick
-
+          # Python3 is already present on macOS runners
 
       - name: Download and Install RustDesk
         run: |
-          curl -L -o /tmp/rustdesk.dmg https://github.com/rustdesk/rustdesk/releases/download/1.4.6/rustdesk-1.4.6-x86_64.dmg
-          hdiutil attach /tmp/rustdesk.dmg -mountpoint /Volumes/RustDesk
-          cp -R /Volumes/RustDesk/RustDesk.app /Applications/
-          hdiutil detach /Volumes/RustDesk
-
+          curl -L -o /tmp/rustdesk.dmg "https://github.com/rustdesk/rustdesk/releases/download/1.4.6/rustdesk-1.4.6-x86_64.dmg"
+          hdiutil attach /tmp/rustdesk.dmg -nobrowse -mountpoint /Volumes/RustDesk
+          cp -R "/Volumes/RustDesk/RustDesk.app" /Applications/
+          hdiutil detach "/Volumes/RustDesk"
+          echo "✅ RustDesk installed"
 
       - name: Reset Screen Recording permissions
         run: |
           sudo tccutil reset ScreenCapture
-
+          echo "✅ Permissions reset - RustDesk will now request access."
 
       - name: Launch RustDesk
         run: |
           sudo -u vncuser open /Applications/RustDesk.app
-          sleep 15
+          sleep 5
 
+      # ----- Download and run the Python automation script -----
+      - name: Download grant_screen_recording.py
+        run: |
+          curl -o /tmp/grant_screen_recording.py \
+            "https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/grant__screen_recording.py"
+          echo "✅ Script downloaded"
 
-      - name: Run Screen Recording grant script (FULL INLINE)
-  timeout-minutes: 8
-  run: |
-    echo "=== STARTING INLINE APPLESCRIPT ==="
+      - name: Grant Screen Recording permission (Python)
+        id: grant
+        continue-on-error: true  # We'll still attempt OCR even if script fails
+        run: |
+          echo "Running Python automation script as vncuser..."
+          sudo -u vncuser python3 /tmp/grant_screen_recording.py
+        shell: bash
 
-    # Run osascript and capture output; if it fails, show stderr and exit
-    sudo -u vncuser osascript > /tmp/script_stdout.log 2> /tmp/script_stderr.log <<'APPLESCRIPT'
--- grant_screen_recording.applescript
--- Automates granting Screen Recording permission to RustDesk on macOS
+      - name: Check Python script result
+        if: steps.grant.outcome == 'failure'
+        run: |
+          echo "⚠️ Python script encountered an error, but we'll try to extract credentials anyway."
 
-property passwordStr : "Apple@123"
-property timeoutSec : 30
-property shortDelay : 1
-property mediumDelay : 2
-property longDelay : 5
+      # ----- Extract RustDesk ID and password from final screenshot -----
+      - name: Extract ID and password from screenshot
+        run: |
+          cd /tmp
+          # Ensure screenshot exists; if not, take a new one
+          if [ ! -f rustdesk_screen.png ]; then
+            echo "Screenshot not found, taking a new one..."
+            sudo -u vncuser screencapture -x /tmp/rustdesk_screen.png
+          fi
+          tesseract rustdesk_screen.png stdout -l eng 2>/dev/null > rustdesk_text.txt
+          echo "=== RUSTDESK CREDENTIALS ==="
+          RUSTDESK_ID=$(grep -Eo '[0-9]{9}' rustdesk_text.txt | head -1)
+          RUSTDESK_PASS=$(grep -Eo '[A-Za-z0-9]{6,8}' rustdesk_text.txt | tail -1)
+          if [ -n "$RUSTDESK_ID" ]; then
+            echo "✅ RustDesk ID: $RUSTDESK_ID"
+          else
+            echo "❌ Could not extract ID. Full OCR text:"
+            cat rustdesk_text.txt
+          fi
+          if [ -n "$RUSTDESK_PASS" ]; then
+            echo "✅ Password: $RUSTDESK_PASS"
+          else
+            echo "❌ Could not extract password. Full OCR text:"
+            cat rustdesk_text.txt
+          fi
+          echo "RUSTDESK_ID=$RUSTDESK_ID" >> $GITHUB_ENV
+          echo "RUSTDESK_PASS=$RUSTDESK_PASS" >> $GITHUB_ENV
 
-on waitForWindow(processName, windowText, maxWait)
-    set startTime to current date
-    repeat while (current date) - startTime < maxWait
-        tell application "System Events"
-            if exists (process processName) then
-                tell process processName
-                    if exists (first window whose title contains windowText) then
-                        return true
-                    end if
-                end tell
-            end if
-        end tell
-        delay 0.5
-    end repeat
-    return false
-end waitForWindow
+      - name: Upload screenshot for manual verification
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustdesk-screenshot
+          path: /tmp/rustdesk_screen.png
+          if-no-files-found: ignore
 
-on clickButton(processName, windowTitle, buttonTitle, maxWait)
-    set startTime to current date
-    repeat while (current date) - startTime < maxWait
-        tell application "System Events"
-            if exists (process processName) then
-                tell process processName
-                    if exists (first window whose title contains windowTitle) then
-                        set w to first window whose title contains windowTitle
-                        if exists (first button of w whose title contains buttonTitle) then
-                            click (first button of w whose title contains buttonTitle)
-                            return true
-                        end if
-                    end if
-                end tell
-            end if
-        end tell
-        delay 0.5
-    end repeat
-    return false
-end clickButton
-
-on run
-    log "STEP 1"
-    if not waitForWindow("RustDesk", "RustDesk", timeoutSec) then
-        error "RustDesk window not found"
-    end if
-
-    tell application "System Events"
-        tell process "RustDesk"
-            set frontmost to true
-            delay shortDelay
-        end tell
-    end tell
-
-    delay longDelay
-    log "STEP 2"
-
-    tell application "System Events"
-        tell process "System Settings"
-            set frontmost to true
-        end tell
-    end tell
-
-    delay longDelay
-
-    log "STEP 3 screenshot"
-
-    do shell script "sudo -u vncuser screencapture -x /tmp/rustdesk_screen_final.png"
-
-    return "SUCCESS"
-end run
-APPLESCRIPT
-
-    # Capture exit status of osascript
-    EXIT_CODE=$?
-    echo "=== APPLESCRIPT FINISHED (exit code $EXIT_CODE) ==="
-    echo "--- STDOUT ---"
-    cat /tmp/script_stdout.log
-    echo "--- STDERR ---"
-    cat /tmp/script_stderr.log
-
-    # If osascript failed, exit the step with the same code
-    if [ $EXIT_CODE -ne 0 ]; then
-        exit $EXIT_CODE
-    fi
+      - name: Keep alive and show connection info
+        run: |
+          echo "========================================================="
+          echo "✅ RUSTDESK READY"
+          echo "========================================================="
+          echo "RustDesk ID: ${{ env.RUSTDESK_ID }}"
+          echo "Password:    ${{ env.RUSTDESK_PASS }}"
+          echo ""
+          echo "📱 ANDROID CONNECTION:"
+          echo "   1. Install 'RustDesk' from Google Play Store"
+          echo "   2. Enter the ID above"
+          echo "   3. When prompted, enter the password"
+          echo "   4. You will see the macOS desktop!"
+          echo ""
+          echo "🌐 Tailscale IP (if needed): ${{ env.TAILSCALE_IP }}"
+          echo ""
+          echo "⏳ Job will stay alive for 6 hours. If OCR failed, download the screenshot artifact."
+          echo "========================================================="
+          while true; do sleep 3600; done
