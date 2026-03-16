@@ -36,7 +36,11 @@ jobs:
       - name: Install dependencies
         run: |
           brew install tesseract cliclick
-          # Python3 is already present on macOS runners
+          # Verify installations and get full paths
+          echo "TESSERACT_PATH=$(which tesseract)" >> $GITHUB_ENV
+          echo "CLICLICK_PATH=$(which cliclick)" >> $GITHUB_ENV
+          echo "✅ Tesseract: $TESSERACT_PATH"
+          echo "✅ Cliclick: $CLICLICK_PATH"
 
       - name: Download and Install RustDesk
         run: |
@@ -56,31 +60,33 @@ jobs:
           sudo -u vncuser open /Applications/RustDesk.app
           sleep 5
 
-      # ----- Download and run the Python automation script -----
+      # ----- Download the Python automation script -----
       - name: Download grant_screen_recording.py
         run: |
           curl -o /tmp/grant_screen_recording.py \
             "https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/grant__screen_recording.py"
           echo "✅ Script downloaded"
 
+      # ----- Run the Python script with proper PATH -----
       - name: Grant Screen Recording permission (Python)
         id: grant
-        continue-on-error: true  # We'll still attempt OCR even if script fails
+        continue-on-error: true
         run: |
-          echo "Running Python automation script as vncuser..."
-          sudo -u vncuser python3 /tmp/grant_screen_recording.py
+          # Pass the full PATH so tesseract and cliclick are found
+          sudo -u vncuser env "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+            python3 /tmp/grant_screen_recording.py
         shell: bash
 
       - name: Check Python script result
         if: steps.grant.outcome == 'failure'
         run: |
-          echo "⚠️ Python script encountered an error, but we'll try to extract credentials anyway."
+          echo "⚠️ Python script encountered an error. The final screenshot may be black."
 
       # ----- Extract RustDesk ID and password from final screenshot -----
       - name: Extract ID and password from screenshot
         run: |
           cd /tmp
-          # Ensure screenshot exists; if not, take a new one
+          # If screenshot missing, take a new one
           if [ ! -f rustdesk_screen.png ]; then
             echo "Screenshot not found, taking a new one..."
             sudo -u vncuser screencapture -x /tmp/rustdesk_screen.png
