@@ -55,183 +55,47 @@ jobs:
           sudo -u vncuser open /Applications/RustDesk.app
           sleep 5
 
-      # ----- Main Automation: Grant Screen Recording Permission -----
-      - name: Automate permission grant (AppleScript with UI element targeting)
+      # ----- NEW STEP: Download and execute the permission grant script -----
+      - name: Grant Screen Recording permission using AppleScript from URL
         run: |
-          sudo -u vncuser osascript <<'APPLESCRIPT'
-            -- Helper: wait for a window with title containing text
-            on waitForWindow(processName, windowText, timeoutSeconds)
-              set startTime to current date
-              repeat while (current date) - startTime < timeoutSeconds
-                tell application "System Events"
-                  if exists (process processName) then
-                    tell process processName
-                      if exists (first window whose title contains windowText) then
-                        return true
-                      end if
-                    end tell
-                  end if
-                end tell
-                delay 0.5
-              end repeat
-              return false
-            end waitForWindow
-
-            -- Helper: click a button by its title in a window
-            on clickButton(processName, windowTitle, buttonTitle, timeoutSeconds)
-              set startTime to current date
-              repeat while (current date) - startTime < timeoutSeconds
-                tell application "System Events"
-                  if exists (process processName) then
-                    tell process processName
-                      if exists (first window whose title contains windowTitle) then
-                        set targetWindow to first window whose title contains windowTitle
-                        if exists (first button of targetWindow whose title contains buttonTitle) then
-                          click (first button of targetWindow whose title contains buttonTitle)
-                          return true
-                        end if
-                      end if
-                    end tell
-                  end if
-                end tell
-                delay 0.5
-              end repeat
-              return false
-            end clickButton
-
-            set userPassword to "Apple@123"
-
-            -- Step 1: Wait for RustDesk main window and click "Configure" button
-            tell application "System Events"
-              if not (waitForWindow("RustDesk", "RustDesk", 30)) then
-                error "RustDesk main window not found"
-              end if
-              tell process "RustDesk"
-                set frontmost to true
-                delay 2
-                -- Try to click button "Configure" by name
-                try
-                  set configureButton to first button of window 1 whose title is "Configure"
-                  click configureButton
-                on error
-                  -- Fallback: click at approximate position (based on typical layout)
-                  do shell script "sudo -u vncuser cliclick c:200,300"
-                end try
-              end tell
-            end tell
-
-            -- Step 2: Wait for the system dialog (Screen Recording permission request)
-            delay 3
-            if not (clickButton("System Events", "Screen Recording", "Open System Settings", 20)) then
-              -- Fallback: click at center of screen
-              do shell script "sudo -u vncuser cliclick c:512,384"
-              delay 2
-            end if
-
-            -- Step 3: Wait for System Settings to open and navigate to Screen Recording pane
-            delay 5
-            tell application "System Events"
-              if not (waitForWindow("System Settings", "Screen Recording", 30)) then
-                -- If not found, open directly via URL
-                do shell script "open 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenRecording'"
-                delay 5
-              end if
-              tell process "System Settings"
-                set frontmost to true
-                delay 3
-
-                -- Step 4: Click the lock if necessary (check if any checkbox is disabled)
-                try
-                  set lockButton to first button of window 1 whose description contains "lock"
-                  if lockButton exists then
-                    click lockButton
-                    delay 2
-                    -- Enter password
-                    keystroke userPassword
-                    delay 1
-                    keystroke return
-                    delay 3
-                  end if
-                end try
-
-                -- Step 5: Find the row containing "RustDesk" and click its checkbox
-                try
-                  set mainTable to table 1 of scroll area 1 of window 1
-                  repeat with aRow in (every row of mainTable)
-                    try
-                      if value of static text 1 of aRow is "RustDesk" then
-                        click checkbox 1 of aRow
-                        exit repeat
-                      end if
-                    end try
-                  end repeat
-                on error
-                  -- Fallback: click at position where checkbox likely is (right side, mid)
-                  do shell script "sudo -u vncuser cliclick c:700,300"
-                end try
-              end tell
-            end tell
-
-            -- Step 6: Handle password prompt if it appears (may have been handled)
-            delay 3
-            tell application "System Events"
-              try
-                set pwWindow to first window whose title contains "Privacy & Security" and description contains "password"
-                if pwWindow exists then
-                  keystroke userPassword
-                  delay 1
-                  click (first button of pwWindow whose title is "Modify Settings")
-                end if
-              end try
-            end tell
-
-            -- Step 7: Handle "Quit & Reopen" dialog
-            delay 5
-            if not (clickButton("RustDesk", "RustDesk", "Quit", 10)) then
-              -- Fallback: try clicking "Quit" in any window
-              tell application "System Events"
-                try
-                  set quitButton to first button of (first window whose title contains "RustDesk") whose title contains "Quit"
-                  click quitButton
-                end try
-              end tell
-            end if
-            delay 10
-
-            -- Step 8: After restart, wait for RustDesk main window
-            if not (waitForWindow("RustDesk", "RustDesk", 30)) then
-              error "RustDesk did not restart"
-            end if
-            tell application "System Events"
-              tell process "RustDesk"
-                set frontmost to true
-              end tell
-            end tell
-            delay 3
-            -- Take screenshot
-            do shell script "sudo -u vncuser screencapture -x /tmp/rustdesk_screen.png"
-          APPLESCRIPT
-          echo "✅ Permission automation complete."
+          # Download the AppleScript
+          curl -sL -o /tmp/grant_screen_recording.applescript \
+            "https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/grant_screen_recording.applescript"
+          
+          # Run it as vncuser (the script already handles delays and cliclick)
+          sudo -u vncuser osascript /tmp/grant_screen_recording.applescript
+          
+          echo "✅ Permission automation completed (script from URL)."
 
       - name: Extract ID and password from screenshot
         run: |
           cd /tmp
-          tesseract rustdesk_screen.png stdout -l eng 2>/dev/null > rustdesk_text.txt
+          # The AppleScript saves a final screenshot at /tmp/rustdesk_screen_final.png
+          if [ -f rustdesk_screen_final.png ]; then
+            tesseract rustdesk_screen_final.png stdout -l eng 2>/dev/null > rustdesk_text.txt
+          else
+            # Fallback to older screenshot name if script didn't run fully
+            tesseract rustdesk_screen.png stdout -l eng 2>/dev/null > rustdesk_text.txt
+          fi
+          
           echo "=== RUSTDESK CREDENTIALS ==="
           RUSTDESK_ID=$(grep -Eo '[0-9]{9}' rustdesk_text.txt | head -1)
           RUSTDESK_PASS=$(grep -Eo '[A-Za-z0-9]{6,8}' rustdesk_text.txt | tail -1)
+          
           if [ -n "$RUSTDESK_ID" ]; then
             echo "✅ RustDesk ID: $RUSTDESK_ID"
           else
             echo "❌ Could not extract ID. Full OCR text:"
             cat rustdesk_text.txt
           fi
+          
           if [ -n "$RUSTDESK_PASS" ]; then
             echo "✅ Password: $RUSTDESK_PASS"
           else
             echo "❌ Could not extract password. Full OCR text:"
             cat rustdesk_text.txt
           fi
+          
           echo "RUSTDESK_ID=$RUSTDESK_ID" >> $GITHUB_ENV
           echo "RUSTDESK_PASS=$RUSTDESK_PASS" >> $GITHUB_ENV
 
@@ -239,7 +103,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rustdesk-screenshot
-          path: /tmp/rustdesk_screen.png
+          path: |
+            /tmp/rustdesk_screen_final.png
+            /tmp/rustdesk_screen.png
           if-no-files-found: ignore
 
       - name: Keep alive and show connection info
