@@ -67,13 +67,20 @@ jobs:
             "https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/grant__screen_recording.py"
           echo "✅ Script downloaded"
 
+      # ----- Verify screencapture is available -----
+      - name: Verify screencapture
+        run: |
+          which screencapture || echo "screencapture not found in PATH"
+          ls -l /usr/sbin/screencapture || echo "screencapture missing"
+        shell: bash
+
       # ----- Run the Python script with proper PATH -----
       - name: Grant Screen Recording permission (Python)
         id: grant
         continue-on-error: true
         run: |
-          # Pass the full PATH so tesseract and cliclick are found
-          sudo -u vncuser env "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+          # Include /usr/sbin for screencapture, plus Homebrew paths
+          sudo -u vncuser env "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin" \
             python3 /tmp/grant_screen_recording.py
         shell: bash
 
