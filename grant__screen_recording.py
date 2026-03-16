@@ -1,134 +1,170 @@
 #!/usr/bin/env python3
 """
-RustDesk Screen Recording + Accessibility automation (Sequoia-ready)
-- Ultra-aggressive bash popup killer (29+ dialogs)
-- Fixed tesseract command (no more �PNG / --psm errors)
+Automate granting Screen Recording permission to RustDesk on macOS.
+First clears any "bash" permission dialogs using AppleScript.
+Then uses OCR (tesseract) to locate UI elements and cliclick to simulate clicks.
+Includes debug screenshots at each step.
 """
 
 import subprocess
 import time
 import re
 import tempfile
+import os
 import sys
 import shutil
 from pathlib import Path
 
 # ----------------------------------------------------------------------
-# CONFIG
+# Configuration
 # ----------------------------------------------------------------------
-USER_PASSWORD = "Apple@123"          # ← CHANGE THIS
-MAX_WAIT = 45
-SCREENSHOT_DIR = Path("/tmp")
+USER_PASSWORD = "Apple@123"          # password for the user
+MAX_WAIT = 30                         # seconds to wait for each step
+SCREENSHOT_DIR = Path("/tmp")         # where to store temporary images
 DEBUG_DIR = SCREENSHOT_DIR / "debug_screenshots"
+
 DEBUG_DIR.mkdir(exist_ok=True)
 
 # ----------------------------------------------------------------------
-# TOOLS
+# Locate required tools
 # ----------------------------------------------------------------------
 TESSERACT_PATH = shutil.which("tesseract")
 CLICLICK_PATH = shutil.which("cliclick")
 SCREENCAPTURE_PATH = shutil.which("screencapture")
 
-if not all([TESSERACT_PATH, CLICLICK_PATH, SCREENCAPTURE_PATH]):
-    print("ERROR: Missing tesseract, cliclick or screencapture. Install with brew.")
+if not TESSERACT_PATH:
+    print("ERROR: tesseract not found in PATH. Please install tesseract.")
+    sys.exit(1)
+if not CLICLICK_PATH:
+    print("ERROR: cliclick not found in PATH. Please install cliclick.")
+    sys.exit(1)
+if not SCREENCAPTURE_PATH:
+    print("ERROR: screencapture not found in PATH. This is unusual on macOS.")
     sys.exit(1)
 
+print(f"Using tesseract: {TESSERACT_PATH}")
+print(f"Using cliclick: {CLICLICK_PATH}")
+print(f"Using screencapture: {SCREENCAPTURE_PATH}")
+
 # ----------------------------------------------------------------------
-# HELPERS
+# Helper functions
 # ----------------------------------------------------------------------
 def run_cmd(cmd, check=True, timeout=30, capture_output=False):
     result = subprocess.run(cmd, shell=True, capture_output=capture_output, timeout=timeout)
     if check and result.returncode != 0:
+        err = result.stderr.decode('utf-8', errors='replace') if result.stderr else ''
+        print(f"Command failed: {cmd}\nstderr: {err}")
         raise RuntimeError(f"Command failed: {cmd}")
     if capture_output:
-        return result.stdout.decode('utf-8', errors='replace').strip(), result.stderr.decode('utf-8', errors='replace').strip()
+        out = result.stdout.decode('utf-8', errors='replace').strip()
+        err = result.stderr.decode('utf-8', errors='replace').strip()
+        return out, err
     return result.returncode
 
 def run_applescript(script):
-    return subprocess.run(['osascript', '-e', script], capture_output=True, text=True).stdout.strip()
+    """Run AppleScript and return output."""
+    cmd = ['osascript', '-e', script]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    return result.stdout.strip()
 
-def ultra_clear_bash_dialogs():
-    """SUPER aggressive dialog killer — clicks every Allow/OK in every window"""
-    print("🚨 Killing ALL bash/permission dialogs (200-loop aggressive mode)...")
+def clear_bash_permission_dialogs():
+    """
+    Aggressively click any "Allow" button in any window, with priority on "bash" windows.
+    """
+    print("Checking for 'bash' permission dialogs...")
     apple_script = '''
     tell application "System Events"
-        repeat 200 times
+        repeat 30 times
             set found to false
+            -- First try windows of process "bash"
             try
-                set allWindows to every window of every process
-                repeat with win in allWindows
-                    try
-                        if (exists button "Allow" of win) then
-                            click button "Allow" of win
-                            set found to true
-                            delay 0.3
-                        end if
-                        if (exists button "OK" of win) then
-                            click button "OK" of win
-                            set found to true
-                            delay 0.3
-                        end if
-                        if (exists button "Continue" of win) or (exists button "Yes" of win) then
-                            click button "Continue" of win
-                            click button "Yes" of win
-                            set found to true
-                            delay 0.3
-                        end if
-                    end try
-                end repeat
+                if exists process "bash" then
+                    set bashWindows to every window of process "bash"
+                    repeat with win in bashWindows
+                        try
+                            if (exists button "Allow" of win) then
+                                click button "Allow" of win
+                                set found to true
+                                delay 2
+                            end if
+                        end try
+                    end repeat
+                end if
             end try
+            -- If not found, try all windows
+            if not found then
+                try
+                    set allWindows to every window of every process
+                    repeat with win in allWindows
+                        try
+                            if (exists button "Allow" of win) then
+                                click button "Allow" of win
+                                set found to true
+                                delay 2
+                            end if
+                        end try
+                    end repeat
+                end try
+            end if
             if not found then exit repeat
-            delay 0.3
+            delay 1
         end repeat
     end tell
     '''
     run_applescript(apple_script)
-    time.sleep(2)
-    print("✅ Dialog killer finished.")
+    print("Finished clearing bash dialogs (if any).")
+    # Wait a moment for dialogs to disappear
+    time.sleep(3)
 
 def get_screen_size():
-    out, _ = run_cmd("system_profiler SPDisplaysDataType | grep Resolution", capture_output=True, check=False)
-    match = re.search(r'(\d+) x (\d+)', out)
-    return (int(match.group(1)), int(match.group(2))) if match else (1920, 1080)
+    output, _ = run_cmd("system_profiler SPDisplaysDataType | grep Resolution", capture_output=True, check=False)
+    match = re.search(r'(\d+) x (\d+)', output)
+    if match:
+        return int(match.group(1)), int(match.group(2))
+    return 1920, 1080
 
 def take_screenshot(path):
     run_cmd(f"{SCREENCAPTURE_PATH} -x {path}")
 
 def debug_screenshot(name):
-    ts = time.strftime("%Y%m%d-%H%M%S")
-    path = DEBUG_DIR / f"{name}_{ts}.png"
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    path = DEBUG_DIR / f"{name}_{timestamp}.png"
     take_screenshot(path)
-    print(f"Debug: {path}")
+    print(f"Debug screenshot saved: {path}")
 
 def ocr_image(image_path):
     base = image_path.with_suffix('')
-    # FIXED ORDER: options BEFORE tsv → no more --psm error
-    cmd = f"{TESSERACT_PATH} {image_path} {base} --psm 6 -l eng tsv"
-    run_cmd(cmd, check=False)
     tsv_path = base.with_suffix('.tsv')
+    cmd = f"{TESSERACT_PATH} {image_path} {base} tsv"
+    stdout, stderr = run_cmd(cmd, check=False, capture_output=True)
     if not tsv_path.exists():
+        print(f"Tesseract failed to create TSV. stderr: {stderr}")
         return []
     with open(tsv_path) as f:
         lines = f.readlines()
     tsv_path.unlink()
+
     results = []
     for line in lines[1:]:
         parts = line.strip().split('\t')
-        if len(parts) >= 12 and parts[11] and int(parts[10]) > 40:
+        if len(parts) < 12:
+            continue
+        if parts[11] and int(parts[10]) > 30:
             results.append({
-                'text': parts[11].strip(),
-                'left': int(parts[6]), 'top': int(parts[7]),
-                'width': int(parts[8]), 'height': int(parts[9])
+                'text': parts[11],
+                'left': int(parts[6]),
+                'top': int(parts[7]),
+                'width': int(parts[8]),
+                'height': int(parts[9])
             })
     return results
 
-def find_text(ocr_results, targets):
-    targets = [targets] if isinstance(targets, str) else targets
+def find_text(ocr_results, target, case_sensitive=False):
+    target_lower = target.lower() if not case_sensitive else target
     for r in ocr_results:
-        text = r['text'].lower()
-        for t in targets:
-            if t.lower() in text:
-                return r
+        text = r['text'] if case_sensitive else r['text'].lower()
+        if (case_sensitive and target in text) or (not case_sensitive and target_lower in text):
+            return r
     return None
 
 def click_at(x, y):
@@ -146,89 +182,104 @@ def type_text(text):
 def press_key(key):
     run_cmd(f"{CLICLICK_PATH} kp:{key}")
 
-def wait_for_ocr(targets, timeout=MAX_WAIT, interval=2):
+def wait_for_ocr(target, timeout=MAX_WAIT, interval=2):
     start = time.time()
     while time.time() - start < timeout:
-        ultra_clear_bash_dialogs()  # ← kill any new popups during wait
         with tempfile.NamedTemporaryFile(suffix='.png', dir=SCREENSHOT_DIR, delete=False) as tmp:
             img_path = Path(tmp.name)
         take_screenshot(img_path)
         results = ocr_image(img_path)
         img_path.unlink()
-        found = find_text(results, targets)
+        found = find_text(results, target)
         if found:
             return found
         time.sleep(interval)
     return None
 
-def click_all_allow_ocr():
-    """Extra OCR hunter for any missed Allow buttons"""
-    for _ in range(15):
-        with tempfile.NamedTemporaryFile(suffix='.png', dir=SCREENSHOT_DIR, delete=False) as tmp:
-            img_path = Path(tmp.name)
-        take_screenshot(img_path)
-        results = ocr_image(img_path)
-        img_path.unlink()
-        allow = find_text(results, "Allow")
-        if allow:
-            click_center(allow)
-            time.sleep(1)
-        else:
-            break
+def wait_and_click(target, timeout=MAX_WAIT):
+    found = wait_for_ocr(target, timeout)
+    if found:
+        click_center(found)
+        return True
+    return False
 
 # ----------------------------------------------------------------------
-# MAIN
+# Main automation steps
 # ----------------------------------------------------------------------
 def main():
-    print("=== RustDesk Permission Automation + Bash Popup Killer ===")
-    ultra_clear_bash_dialogs()
+    print("Starting Screen Recording permission automation...")
+
+    # Step 0: Aggressively clear any bash permission dialogs
+    clear_bash_permission_dialogs()
+
     width, height = get_screen_size()
-    debug_screenshot("start")
+    print(f"Screen resolution: {width}x{height}")
+    debug_screenshot("initial_state")
 
-    # Step 1: Configure button in RustDesk
-    print("Looking for Configure...")
-    if not wait_for_ocr("Configure", 25):
-        click_at(width // 2, int(height * 0.78))
-    debug_screenshot("after_configure")
+    # Step 1: Wait for RustDesk main window and click "Configure"
+    print("Looking for 'Configure' button...")
+    if not wait_and_click("Configure", timeout=20):
+        print("OCR failed, using fallback coordinate for Configure.")
+        click_at(width // 2, int(height * 0.75))
+        time.sleep(2)
+        debug_screenshot("after_configure_fallback")
 
-    # Step 2: System Settings navigation
-    time.sleep(4)
-    ultra_clear_bash_dialogs()
-    pane = wait_for_ocr(["Screen & System Audio Recording", "Screen Recording"], 20)
-    if pane:
-        click_center(pane)
-        time.sleep(3)
-    debug_screenshot("after_pane")
+    # Step 2: System dialog: click "Open System Settings"
+    print("Looking for 'Open System Settings'...")
+    if not wait_and_click("Open System Settings", timeout=15):
+        print("Fallback: clicking left-center for Open System Settings.")
+        click_at(width // 2 - 200, height // 2)
+        time.sleep(2)
+        debug_screenshot("after_open_sys_settings_fallback")
 
-    # Step 3: Toggle RustDesk
-    rustdesk_row = wait_for_ocr("RustDesk", 25)
-    if rustdesk_row:
-        toggle_x = int(width * 0.88)
-        toggle_y = rustdesk_row['top'] + rustdesk_row['height'] // 2
-        click_at(toggle_x, toggle_y)
+    # Step 3: In System Settings, find RustDesk row and enable switch
+    print("Waiting for System Settings to open...")
+    time.sleep(5)
+    debug_screenshot("system_settings_opened")
+
+    rustdesk_ocr = wait_for_ocr("RustDesk", timeout=20)
+    if rustdesk_ocr:
+        switch_x = rustdesk_ocr['left'] + rustdesk_ocr['width'] + 100
+        switch_y = rustdesk_ocr['top'] + rustdesk_ocr['height'] // 2
+        print(f"Clicking switch at ({switch_x}, {switch_y})")
+        click_at(switch_x, switch_y)
+        time.sleep(2)
+        debug_screenshot("after_switch_ocr")
     else:
-        click_at(int(width * 0.88), int(height * 0.45))
-    debug_screenshot("after_toggle")
+        print("RustDesk text not found, using fallback switch location.")
+        click_at(int(width * 0.8), int(height * 0.4))
+        time.sleep(2)
+        debug_screenshot("after_switch_fallback")
 
-    # Step 4: Password / Unlock
-    if wait_for_ocr(["Unlock to change", "Enter your password", "password"], 10):
+    # Step 4: If password prompt appears, enter password
+    print("Checking for password prompt...")
+    if wait_for_ocr("Enter your password", timeout=5):
+        print("Password prompt detected, typing password...")
         type_text(USER_PASSWORD)
         time.sleep(1)
         press_key("return")
-        time.sleep(3)
-    debug_screenshot("after_password")
+        time.sleep(2)
+        debug_screenshot("after_password_entry")
+        wait_and_click("Modify Settings", timeout=5)
 
-    # Step 5: Quit & Reopen + final cleanup
-    click_all_allow_ocr()
-    if wait_for_ocr(["Quit", "Quit RustDesk"], 10):
-        time.sleep(12)
-    debug_screenshot("final")
+    # Step 5: Handle "Quit & Reopen" dialog
+    print("Looking for 'Quit' button in RustDesk...")
+    if wait_and_click("Quit", timeout=10):
+        print("RustDesk quitting, waiting for restart...")
+        time.sleep(10)
+        debug_screenshot("after_quit")
+    else:
+        pass
 
-    final_path = SCREENSHOT_DIR / "rustdesk_final.png"
-    take_screenshot(final_path)
-    print(f"✅ DONE! Final screenshot: {final_path}")
-    print("Reboot + test connection.")
-    print("💡 Permanent fix: Add Terminal.app to Screen & System Audio Recording manually once.")
+    # Step 6: Wait for RustDesk to be back and take final screenshot
+    print("Waiting for RustDesk to restart...")
+    time.sleep(10)
+    final_screenshot = SCREENSHOT_DIR / "rustdesk_screen.png"
+    take_screenshot(final_screenshot)
+    print(f"Final screenshot saved to {final_screenshot}")
+    debug_screenshot("final_state")
+
+    print("Automation completed.")
 
 if __name__ == "__main__":
     main()
