@@ -1,179 +1,338 @@
-name: macOS GUI RustDesk - external script + click Configure
+#!/usr/bin/env python3
+# Robust automation with OCR & AppleScript location for Configure button
+import subprocess, time, pathlib, sys, os, signal, re
 
-on:
-  workflow_dispatch:
+DEBUG = pathlib.Path("/tmp/debug_screenshots")
+DEBUG.mkdir(parents=True, exist_ok=True)
 
-jobs:
-  gui:
-    runs-on: macos-latest
-    env:
-      GUI_USER: vncuser
-      GUI_PASS: Apple@123
-      DEBUG_DIR: /tmp/debug_screenshots
-      RUSTDESK_DMG_URL: https://github.com/rustdesk/rustdesk/releases/download/1.4.6/rustdesk-1.4.6-x86_64.dmg
-      SCRIPT_URL: "https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/grant__screen_recording.py"
+TESSERACT = "/opt/homebrew/bin/tesseract"
+CLICLICK = "/opt/homebrew/bin/cliclick"
+clicker_proc = None
 
-    steps:
+def log(msg):
+    print(f"[{time.strftime('%H:%M:%S')}] {msg}")
 
-      - name: Prepare debug folder (writable)
-        run: |
-          mkdir -p "${DEBUG_DIR}"
-          chmod 777 "${DEBUG_DIR}"
-
-      - name: Create GUI user (vncuser) and chown debug dir
-        run: |
-          if ! id -u "${GUI_USER}" >/dev/null 2>&1; then
-            sudo dscl . -create /Users/${GUI_USER}
-            sudo dscl . -create /Users/${GUI_USER} UserShell /bin/bash
-            sudo dscl . -create /Users/${GUI_USER} RealName "VNC User"
-            sudo dscl . -create /Users/${GUI_USER} UniqueID "510"
-            sudo dscl . -create /Users/${GUI_USER} PrimaryGroupID 20
-            sudo dscl . -create /Users/${GUI_USER} NFSHomeDirectory /Users/${GUI_USER}
-            sudo dscl . -passwd /Users/${GUI_USER} "${GUI_PASS}"
-            sudo dscl . -append /Groups/admin GroupMembership ${GUI_USER}
-            sudo createhomedir -c -u ${GUI_USER} >/dev/null 2>&1 || true
-          fi
-          sudo chown -R ${GUI_USER}:staff "${DEBUG_DIR}"
-          chmod -R 777 "${DEBUG_DIR}"
-
-      - name: Install optional tools (tesseract, cliclick)
-        run: |
-          brew install tesseract cliclick || true
-          echo "tesseract: $(which tesseract || true)"
-          echo "cliclick: $(which cliclick || true)"
-
-      - name: Download & Install RustDesk
-        run: |
-          curl -L -o /tmp/rustdesk.dmg "${RUSTDESK_DMG_URL}"
-          hdiutil attach /tmp/rustdesk.dmg -mountpoint /Volumes/RustDesk -nobrowse || true
-          cp -R "/Volumes/RustDesk/RustDesk.app" /Applications/ || true
-          hdiutil detach "/Volumes/RustDesk" || true
-          ls -l /Applications/RustDesk.app || true
-
-      - name: Launch RustDesk as GUI user and take initial screenshot
-        run: |
-          sudo -u ${GUI_USER} open -a /Applications/RustDesk.app || true
-          sleep 12
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/01_after_launch.png" || true
-
-      - name: Download your external Python automation (no inline Python)
-        run: |
-          if [ -z "${SCRIPT_URL}" ]; then
-            echo "SCRIPT_URL empty"
-            exit 1
-          fi
-          curl -fsSL "${SCRIPT_URL}" -o /tmp/grant__screen_recording.py
-          sudo chown ${GUI_USER}:staff /tmp/grant__screen_recording.py || true
-          chmod +x /tmp/grant__screen_recording.py
-          echo "Downloaded external python script at /tmp/grant__screen_recording.py"
-
-      - name: Run your Python automation as GUI user
-        continue-on-error: true
-        run: |
-          sudo -u ${GUI_USER} env PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin" \
-            python3 /tmp/grant__screen_recording.py || true
-          # give macOS a moment to settle
-          sleep 2
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/09_after_python.png" || true
-
-      - name: Write AppleScript helper (click Configure) to a file
-        run: |
-          cat > /tmp/click_config.scpt <<'APPLESCRIPT'
--- AppleScript: find "Configure" text in RustDesk windows and click it or adjacent control
-tell application "System Events"
-  set procName to "RustDesk"
-  repeat 6 times
-    try
-      if exists process procName then
-        set p to process procName
-        -- scan all windows
-        repeat with w in (every window of p)
-          try
-            -- find static texts containing "configure" (case-insensitive)
-            set stList to (every static text of w)
-            repeat with st in stList
-              try
-                set stValue to (value of st) as string
-                if stValue is not missing value and (stValue as string) contains "Configure" then
-                  -- compute center of the static text
-                  try
-                    set pos to position of st
-                    set sz to size of st
-                    set cx to (item 1 of pos) + (item 1 of sz) / 2
-                    set cy to (item 2 of pos) + (item 2 of sz) / 2
-                    -- click the static text
-                    tell application "System Events" to click at {cx, cy}
-                    delay 0.6
-                    return true
-                  end try
-                end if
-              end try
+def start_allow_clicker():
+    global clicker_proc
+    script = '''
+    repeat
+        tell application "System Events"
+            repeat with p in (every process)
+                try
+                    repeat with w in (every window of p)
+                        try
+                            if exists button "Allow" of w then
+                                click button "Allow" of w
+                                delay 0.5
+                            end if
+                        end try
+                    end repeat
+                end try
             end repeat
-            -- fallback: find any button in the window whose title contains "Configure"
-            set btns to (every button of w)
-            repeat with b in btns
-              try
-                if ((title of b) as string) contains "Configure" then
-                  click b
-                  delay 0.6
-                  return true
-                end if
-              end try
-            end repeat
-          end try
-        end repeat
-      end if
-    end try
-    delay 0.8
-  end repeat
-  return false
-end tell
-APPLESCRIPT
-          sudo chown ${GUI_USER}:staff /tmp/click_config.scpt || true
-          chmod 755 /tmp/click_config.scpt || true
+        end tell
+        delay 0.5
+    end repeat
+    '''
+    clicker_proc = subprocess.Popen(['osascript', '-e', script],
+                                     stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
+    log("Background clicker started")
 
-      - name: Run AppleScript helper as GUI user (attempt to click Configure)
-        continue-on-error: true
-        run: |
-          # run as GUI user so Accessibility events are from the GUI session
-          sudo -u ${GUI_USER} /usr/bin/osascript /tmp/click_config.scpt || true
-          sleep 1
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/10_after_click_config.png" || true
+def stop_allow_clicker():
+    if clicker_proc:
+        clicker_proc.terminate()
+        clicker_proc.wait()
+        log("Background clicker stopped")
 
-      - name: Extra fallback: use cliclick to click near likely Configure areas
-        run: |
-          sudo -u ${GUI_USER} bash -lc '
-            set -e
-            for pos in "960,800" "950,780" "1000,820" "1100,400" "1000,420"; do
-              IFS="," read x y <<< "$pos"
-              if [ -x /usr/local/bin/cliclick ]; then
-                /usr/local/bin/cliclick c:"$x,$y" || true
-              elif [ -x /opt/homebrew/bin/cliclick ]; then
-                /opt/homebrew/bin/cliclick c:"$x,$y" || true
-              else
-                osascript -e "tell application \"System Events\" to click at {$x, $y}" || true
-              fi
-              sleep 0.6
-              /usr/sbin/screencapture -x "${DEBUG_DIR}/11_fallback_click_${x}_${y}.png" || true
-            done
-          '
+def shot(name):
+    path = DEBUG / name
+    subprocess.run(["/usr/sbin/screencapture", "-x", str(path)], check=False)
+    log(f"Screenshot saved: {name}")
 
-      - name: Capture final RustDesk screenshot (for OCR & artifact)
-        run: |
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x /tmp/rustdesk.png || true
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/12_final_rustdesk.png" || true
-          sudo chown ${GUI_USER}:staff /tmp/rustdesk.png || true
+def applescript(script, check=False):
+    """Run AppleScript, return (success, output)."""
+    result = subprocess.run(['osascript', '-e', script],
+                            capture_output=True, text=True)
+    if check and result.returncode != 0:
+        log(f"AppleScript error: {result.stderr}")
+    return result.returncode == 0, result.stdout.strip()
 
-      - name: Upload ALL screenshots artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: all-screenshots
-          path: |
-            /tmp/debug_screenshots/**
-            /tmp/rustdesk.png
-          if-no-files-found: ignore
+def cliclick(x, y):
+    try:
+        subprocess.run([CLICLICK, f"c:{x},{y}"], check=True, timeout=5)
+        log(f"cliclick at ({x},{y})")
+    except:
+        log("cliclick failed, trying AppleScript click")
+        applescript(f'tell application "System Events" to click at {{{x},{y}}}')
 
-      - name: Short keep-alive (10 minutes)
-        run: |
-          echo "Finished. Sleeping 10 minutes so you can fetch artifacts."
-          sleep 600
+def wait_for_no_dialogs(timeout=30):
+    start = time.time()
+    while time.time() - start < timeout:
+        ok, out = applescript('''
+            tell application "System Events"
+                set found to false
+                repeat with p in (every process)
+                    try
+                        repeat with w in (every window of p)
+                            if exists button "Allow" of w then
+                                set found to true
+                                exit repeat
+                            end if
+                        end repeat
+                    end try
+                end repeat
+                return found
+            end tell
+        ''')
+        if out == "false":
+            log("No 'Allow' dialogs left")
+            return True
+        time.sleep(1)
+    log("Warning: dialogs still present after timeout")
+    return False
+
+def trigger_and_grant_bash():
+    log("Triggering bash permission...")
+    subprocess.run(["/usr/sbin/screencapture", "-x", "/tmp/dummy.png"], check=False)
+    time.sleep(3)
+    if wait_for_no_dialogs(15):
+        log("Bash permission granted")
+    else:
+        log("Bash permission may not be fully granted, continuing")
+
+def get_button_position_by_title(app_name, button_title):
+    """AppleScript to get (x,y) of button with given title in app's front window."""
+    script = f'''
+    tell application "System Events"
+        tell process "{app_name}"
+            set frontmost to true
+            try
+                set theButton to first button of window 1 whose title is "{button_title}"
+                set btnPosition to position of theButton
+                set btnSize to size of theButton
+                return (item 1 of btnPosition + (item 1 of btnSize) / 2) & "," & (item 2 of btnPosition + (item 2 of btnSize) / 2)
+            on error
+                return "not found"
+            end try
+        end tell
+    end tell
+    '''
+    ok, out = applescript(script)
+    if ok and out != "not found" and ',' in out:
+        x, y = map(int, out.split(','))
+        log(f"Found '{button_title}' at ({x},{y}) via AppleScript")
+        return (x, y)
+    return None
+
+def find_configure_by_ocr():
+    """Use tesseract to locate 'Configure' on screen, return center coordinates."""
+    shot("ocr_search.png")
+    # Run tesseract with bounding boxes
+    tmp_img = DEBUG / "ocr_tmp.png"
+    subprocess.run(["/usr/sbin/screencapture", "-x", str(tmp_img)], check=False)
+    base = tmp_img.with_suffix('')
+    subprocess.run([TESSERACT, str(tmp_img), str(base), "tsv"], check=False, capture_output=True)
+    tsv = base.with_suffix('.tsv')
+    if tsv.exists():
+        with open(tsv) as f:
+            lines = f.readlines()
+        tsv.unlink()
+        tmp_img.unlink()
+        for line in lines[1:]:
+            parts = line.strip().split('\t')
+            if len(parts) >= 12 and parts[11] and int(parts[10]) > 50:
+                text = parts[11].lower()
+                if "configure" in text:
+                    x = int(parts[6]) + int(parts[8])//2
+                    y = int(parts[7]) + int(parts[9])//2
+                    log(f"Found 'Configure' via OCR at ({x},{y})")
+                    return (x, y)
+    log("OCR did not find 'Configure'")
+    return None
+
+def click_configure():
+    """Try multiple methods to click Configure, return True if successful."""
+    log("Attempting to click 'Configure' in RustDesk...")
+    methods = [
+        ("AppleScript position", lambda: get_button_position_by_title("RustDesk", "Configure")),
+        ("AppleScript position (lowercase)", lambda: get_button_position_by_title("RustDesk", "configure")),
+        ("AppleScript position (process rustdesk)", lambda: get_button_position_by_title("rustdesk", "Configure")),
+        ("OCR", find_configure_by_ocr),
+        ("Fallback coordinate (960,810)", lambda: (960, 810)),
+        ("Fallback coordinate (950,800)", lambda: (950, 800)),
+        ("Fallback coordinate (970,820)", lambda: (970, 820)),
+    ]
+    for method_name, method_func in methods:
+        log(f"Trying method: {method_name}")
+        pos = method_func()
+        if pos:
+            x, y = pos
+            cliclick(x, y)
+            time.sleep(3)
+            # Verify if permission dialog appeared
+            ok, out = applescript('''
+                tell application "System Events"
+                    if exists (first window whose title contains "Screen Recording") then
+                        return "dialog_found"
+                    else
+                        return "no_dialog"
+                    end if
+                end tell
+            ''')
+            if "dialog_found" in out:
+                log("Configure click successful – dialog detected")
+                shot("02_after_configure_success.png")
+                return True
+            else:
+                log("Dialog not detected after click, trying next method")
+        else:
+            log(f"Method {method_name} returned no position")
+    log("All methods failed to click Configure")
+    shot("02_after_configure_failed.png")
+    return False
+
+def click_open_system_settings():
+    log("Looking for 'Open System Settings' button...")
+    # Similar multi-method approach
+    methods = [
+        ("AppleScript by title", lambda: get_button_position_by_title("System Events", "Open System Settings")),
+        ("OCR", lambda: find_text_by_ocr("Open System Settings")),
+        ("Fallback (760,540)", lambda: (760, 540)),
+    ]
+    for method_name, method_func in methods:
+        log(f"Trying method: {method_name}")
+        pos = method_func()
+        if pos:
+            cliclick(*pos)
+            time.sleep(3)
+            # Verify System Settings opened
+            ok, out = applescript('''
+                tell application "System Events"
+                    if exists process "System Settings" then return "yes"
+                    return "no"
+                end tell
+            ''')
+            if out == "yes":
+                log("System Settings opened")
+                shot("03_after_open_settings_success.png")
+                return True
+    log("Failed to open System Settings")
+    shot("03_after_open_settings_failed.png")
+    return False
+
+def find_text_by_ocr(target):
+    # Same as find_configure_by_ocr but generic
+    tmp_img = DEBUG / "ocr_tmp2.png"
+    subprocess.run(["/usr/sbin/screencapture", "-x", str(tmp_img)], check=False)
+    base = tmp_img.with_suffix('')
+    subprocess.run([TESSERACT, str(tmp_img), str(base), "tsv"], check=False, capture_output=True)
+    tsv = base.with_suffix('.tsv')
+    if tsv.exists():
+        with open(tsv) as f:
+            lines = f.readlines()
+        tsv.unlink()
+        tmp_img.unlink()
+        target_lower = target.lower()
+        for line in lines[1:]:
+            parts = line.strip().split('\t')
+            if len(parts) >= 12 and parts[11] and int(parts[10]) > 50:
+                text = parts[11].lower()
+                if target_lower in text:
+                    x = int(parts[6]) + int(parts[8])//2
+                    y = int(parts[7]) + int(parts[9])//2
+                    log(f"Found '{target}' via OCR at ({x},{y})")
+                    return (x, y)
+    log(f"OCR did not find '{target}'")
+    return None
+
+def toggle_rustdesk_in_settings():
+    log("Toggling RustDesk in System Settings...")
+    time.sleep(5)
+    # Try to find the toggle via OCR or coordinates
+    pos = find_text_by_ocr("RustDesk")
+    if pos:
+        toggle_x = pos[0] + 200
+        toggle_y = pos[1]
+        cliclick(toggle_x, toggle_y)
+        log("Clicked toggle based on RustDesk text position")
+    else:
+        log("Using fallback toggle position (1500,400)")
+        cliclick(1500, 400)
+    time.sleep(2)
+    shot("04_after_toggle.png")
+
+def handle_password():
+    log("Checking for password prompt...")
+    success, _ = applescript('''
+        tell application "System Events"
+            if exists (first window whose title contains "Privacy & Security" and exists button "Modify Settings") then
+                keystroke "Apple@123"
+                delay 1
+                key code 36
+                delay 1
+                click (first button whose title is "Modify Settings")
+                return "handled"
+            end if
+            return "none"
+        end tell
+    ''')
+    if "handled" in _:
+        log("Password prompt handled")
+    else:
+        log("No password prompt detected")
+
+def handle_quit_reopen():
+    log("Looking for 'Quit' dialog...")
+    success, _ = applescript('''
+        tell application "System Events"
+            try
+                click (first button of (first window whose title contains "RustDesk") whose title is "Quit")
+                return "quit_clicked"
+            end try
+            return "no_quit"
+        end tell
+    ''')
+    if "quit_clicked" in _:
+        log("Quit clicked, waiting for restart")
+        time.sleep(8)
+    else:
+        log("No quit dialog (already allowed?)")
+
+# ---------- MAIN ----------
+log("=== Starting automation ===")
+shot("00_start.png")
+
+start_allow_clicker()
+time.sleep(1)
+
+# Step 0: Grant bash permission
+trigger_and_grant_bash()
+shot("01_after_bash.png")
+
+# Step 1: Click Configure
+if not click_configure():
+    log("WARNING: Could not click Configure – will try to continue but may fail")
+    # We'll continue anyway to capture more debug info
+
+# Step 2: Click Open System Settings
+if not click_open_system_settings():
+    log("WARNING: Could not open System Settings")
+
+# Step 3: Toggle RustDesk
+toggle_rustdesk_in_settings()
+
+# Step 4: Password
+handle_password()
+shot("05_after_password.png")
+
+# Step 5: Quit & Reopen
+handle_quit_reopen()
+shot("06_after_quit.png")
+
+# Step 6: Final screenshot
+time.sleep(5)
+subprocess.run(["/usr/sbin/screencapture", "-x", "/tmp/rustdesk.png"], check=False)
+shot("07_final.png")
+
+stop_allow_clicker()
+log("=== Automation completed ===")
