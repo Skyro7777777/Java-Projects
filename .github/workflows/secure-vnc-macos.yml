@@ -60,7 +60,7 @@ jobs:
           sudo chmod +x /tmp/grant_screen_recording.py
           sudo -u ${GUI_USER} env PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin" \
             python3 /tmp/grant_screen_recording.py || true
-          sleep 12
+          sleep 15
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/09_after_script.png" || true
 
       - name: Extra Allow clicks + popup cleanup
@@ -72,13 +72,14 @@ jobs:
                   try
                     if exists button "Allow" of w then click button "Allow" of w
                     if exists button "Quit & Reopen" of w then click button "Quit & Reopen" of w
+                    if exists button "Close" of w then click button "Close" of w
                   end try
                 end repeat
               end repeat
             end try
             delay 0.5
           end repeat' || true
-          sleep 6
+          sleep 8
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/10_after_cleanup.png" || true
 
       - name: Final screenshots + OCR
