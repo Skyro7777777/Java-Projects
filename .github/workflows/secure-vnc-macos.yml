@@ -1,4 +1,4 @@
-name: macOS GUI Remotix Agent – Grant Screen Recording (2026 version)
+name: macOS GUI AnyDesk – Grant Screen Recording (2026 version)
 
 on: workflow_dispatch
 
@@ -9,7 +9,7 @@ jobs:
       GUI_USER: vncuser
       GUI_PASS: Apple@123
       DEBUG_DIR: /tmp/debug_screenshots
-      REMOTIX_DMG_URL: "https://downloads.remotix.com/rx-mac/Remotix-5.1.1-20764.dmg"
+      ANYDESK_DMG_URL: "https://download.anydesk.com/anydesk.dmg"
       SCRIPT_URL: "https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/grant__screen_recording.py"
 
     steps:
@@ -38,19 +38,19 @@ jobs:
         run: |
           brew install tesseract cliclick || true
 
-      - name: Download & Install Remotix Agent
+      - name: Download & Install AnyDesk
         run: |
-          curl -L -o /tmp/remotix.dmg "${REMOTIX_DMG_URL}"
-          hdiutil attach /tmp/remotix.dmg -mountpoint /Volumes/Remotix -nobrowse || true
-          cp -R "/Volumes/Remotix/Remotix Agent.app" /Applications/ || true
-          hdiutil detach "/Volumes/Remotix" || true
-          echo "Remotix Agent installed"
+          curl -L -o /tmp/anydesk.dmg "${ANYDESK_DMG_URL}"
+          hdiutil attach /tmp/anydesk.dmg -mountpoint /Volumes/AnyDesk -nobrowse || true
+          cp -R "/Volumes/AnyDesk/AnyDesk.app" /Applications/ || true
+          hdiutil detach "/Volumes/AnyDesk" || true
+          echo "AnyDesk installed"
 
       - name: Reset TCC + initial launch
         run: |
-          sudo -u ${GUI_USER} tccutil reset ScreenCapture com.remotix.agent || true
-          sudo -u ${GUI_USER} tccutil reset Accessibility com.remotix.agent || true
-          sudo -u ${GUI_USER} open -a "/Applications/Remotix Agent.app" || true
+          sudo -u ${GUI_USER} tccutil reset ScreenCapture com.anydesk.AnyDesk || true
+          sudo -u ${GUI_USER} tccutil reset Accessibility com.anydesk.AnyDesk || true
+          sudo -u ${GUI_USER} open -a "/Applications/AnyDesk.app" || true
           sleep 15
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/01_after_launch.png" || true
 
@@ -83,12 +83,12 @@ jobs:
 
       - name: Final screenshots + OCR
         run: |
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x /tmp/remotix_final.png || true
-          sudo chown ${GUI_USER}:staff /tmp/remotix_final.png || true
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/11_final_remotix.png" || true
-          sudo -u ${GUI_USER} tesseract /tmp/remotix_final.png /tmp/remotix_ocr --psm 6 || true
-          echo "--- FINAL OCR (ID should appear) ---"
-          cat /tmp/remotix_ocr.txt || echo "No OCR output"
+          sudo -u ${GUI_USER} /usr/sbin/screencapture -x /tmp/anydesk_final.png || true
+          sudo chown ${GUI_USER}:staff /tmp/anydesk_final.png || true
+          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/11_final_anydesk.png" || true
+          sudo -u ${GUI_USER} tesseract /tmp/anydesk_final.png /tmp/anydesk_ocr --psm 6 || true
+          echo "--- FINAL OCR (AnyDesk ID should appear) ---"
+          cat /tmp/anydesk_ocr.txt || echo "No OCR output"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -96,7 +96,7 @@ jobs:
           name: all-screenshots
           path: |
             /tmp/debug_screenshots/**
-            /tmp/remotix_final.png
+            /tmp/anydesk_final.png
           if-no-files-found: ignore
 
       - name: Keep runner alive
