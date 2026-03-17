@@ -1,4 +1,4 @@
-name: macOS GUI AnyDesk – Grant Screen Recording (2026 version)
+name: macOS GUI AnyDesk – Grant Screen Recording + Accessibility (exact screenshot flow)
 
 on: workflow_dispatch
 
@@ -44,14 +44,13 @@ jobs:
           hdiutil attach /tmp/anydesk.dmg -mountpoint /Volumes/AnyDesk -nobrowse || true
           cp -R "/Volumes/AnyDesk/AnyDesk.app" /Applications/ || true
           hdiutil detach "/Volumes/AnyDesk" || true
-          echo "AnyDesk installed"
 
-      - name: Reset TCC + initial launch
+      - name: Reset TCC + launch AnyDesk
         run: |
           sudo -u ${GUI_USER} tccutil reset ScreenCapture com.anydesk.AnyDesk || true
           sudo -u ${GUI_USER} tccutil reset Accessibility com.anydesk.AnyDesk || true
           sudo -u ${GUI_USER} open -a "/Applications/AnyDesk.app" || true
-          sleep 15
+          sleep 18
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/01_after_launch.png" || true
 
       - name: Download & run automation script
@@ -61,25 +60,26 @@ jobs:
           sudo chmod +x /tmp/grant_screen_recording.py
           sudo -u ${GUI_USER} env PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin" \
             python3 /tmp/grant_screen_recording.py || true
-          sleep 10
+          sleep 12
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/09_after_script.png" || true
 
-      - name: Extra Allow clicks
+      - name: Extra Allow clicks + popup cleanup
         run: |
-          sudo -u ${GUI_USER} osascript -e 'tell application "System Events" to repeat 12 times
+          sudo -u ${GUI_USER} osascript -e 'tell application "System Events" to repeat 15 times
             try
               repeat with p in (every process)
                 repeat with w in (every window of p)
                   try
                     if exists button "Allow" of w then click button "Allow" of w
+                    if exists button "Quit & Reopen" of w then click button "Quit & Reopen" of w
                   end try
                 end repeat
               end repeat
             end try
             delay 0.5
           end repeat' || true
-          sleep 5
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/10_after_extra_clicks.png" || true
+          sleep 6
+          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/10_after_cleanup.png" || true
 
       - name: Final screenshots + OCR
         run: |
@@ -87,7 +87,7 @@ jobs:
           sudo chown ${GUI_USER}:staff /tmp/anydesk_final.png || true
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/11_final_anydesk.png" || true
           sudo -u ${GUI_USER} tesseract /tmp/anydesk_final.png /tmp/anydesk_ocr --psm 6 || true
-          echo "--- FINAL OCR (AnyDesk ID should appear) ---"
+          echo "--- FINAL OCR (AnyDesk ID should be visible) ---"
           cat /tmp/anydesk_ocr.txt || echo "No OCR output"
 
       - name: Upload artifacts
