@@ -49,15 +49,23 @@ jobs:
           hdiutil detach "/Volumes/AnyDesk" || true
           ls -l /Applications/AnyDesk.app || true
 
-      - name: Download external AppleScript (raw) to runner
-        run: |
-          if [ -z "${APPLESCRIPT_URL}" ] || [ "${APPLESCRIPT_URL}" = "YOUR_RAW_APPLESCRIPT_URL_HERE" ]; then
-            echo "ERROR: Set APPLESCRIPT_URL to the raw URL of clear_popups.applescript"; exit 1
-          fi
-          curl -fsSL "${APPLESCRIPT_URL}" -o /tmp/clear_popups.applescript
-          sudo chown ${GUI_USER}:staff /tmp/clear_popups.applescript || true
-          chmod 755 /tmp/clear_popups.applescript
+      - name: Download & run external AppleScript (safe)
+  run: |
+    if [ -z "${APPLESCRIPT_URL}" ] || [ "${APPLESCRIPT_URL}" = "YOUR_RAW_APPLESCRIPT_URL_HERE" ]; then
+      echo "ERROR: Set APPLESCRIPT_URL to the raw URL of clear_popups.applescript"; exit 1
+    fi
 
+    # fetch script to /tmp (overwrite if exists)
+    curl -fsSL "${APPLESCRIPT_URL}" -o /tmp/clear_popups.applescript || { echo "curl failed"; exit 1; }
+
+    # run it as the GUI user (osascript reads the file; execute bit not required)
+    sudo -u ${GUI_USER} /usr/bin/osascript /tmp/clear_popups.applescript || true
+
+    # keep a copy for debugging (owned by GUI_USER so you can inspect it in artifacts)
+    sudo -u ${GUI_USER} cp /tmp/clear_popups.applescript "${DEBUG_DIR}/clear_popups.applescript" || true
+
+    # screenshot after attempting clears
+    sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/00_after_clear_popups.png" || true
       - name: Run AppleScript as GUI user (clear popups)
         run: |
           # run as GUI user so the script can access windows/sheets of that user
