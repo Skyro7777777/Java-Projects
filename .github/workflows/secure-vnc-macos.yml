@@ -9,7 +9,7 @@ jobs:
       GUI_USER: vncuser
       GUI_PASS: Apple@123
       DEBUG_DIR: /tmp/debug_screenshots
-      ANYDESK_DMG_URL: "https://download.anydesk.com/anydesk.dmg"
+      ANYDESK_PKG_URL: "https://download.anydesk.com/anydesk.pkg"
       SCRIPT_URL: "https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/grant__screen_recording.py"
       UNATTENDED_PASSWORD: "Apple@123"
 
@@ -39,19 +39,18 @@ jobs:
         run: |
           brew install tesseract cliclick || true
 
-      - name: Download & Install AnyDesk
+      - name: Download & Install AnyDesk (full .pkg with service)
         run: |
-          curl -L -o /tmp/anydesk.dmg "${ANYDESK_DMG_URL}"
-          hdiutil attach /tmp/anydesk.dmg -mountpoint /Volumes/AnyDesk -nobrowse || true
-          cp -R "/Volumes/AnyDesk/AnyDesk.app" /Applications/ || true
-          hdiutil detach "/Volumes/AnyDesk" || true
+          curl -L -o /tmp/anydesk.pkg "${ANYDESK_PKG_URL}"
+          sudo installer -pkg /tmp/anydesk.pkg -target /
+          echo "AnyDesk installed via full pkg (service registered)"
 
       - name: Reset TCC + launch AnyDesk
         run: |
           sudo -u ${GUI_USER} tccutil reset ScreenCapture com.anydesk.AnyDesk || true
           sudo -u ${GUI_USER} tccutil reset Accessibility com.anydesk.AnyDesk || true
           sudo -u ${GUI_USER} open -a "/Applications/AnyDesk.app" || true
-          sleep 18
+          sleep 20
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/01_after_launch.png" || true
 
       - name: Run automation script (permissions + add to both panes)
@@ -66,12 +65,12 @@ jobs:
 
       - name: Enable Unattended Access (password Apple@123)
         run: |
-          # Restart AnyDesk cleanly so the service starts properly
+          # Ensure service is running
           sudo -u ${GUI_USER} killall AnyDesk || true
-          sleep 4
+          sleep 5
           sudo -u ${GUI_USER} open -a "/Applications/AnyDesk.app" || true
-          sleep 15   # critical wait for the AnyDesk service to fully start
-          # Now set the password (official CLI method)
+          sleep 20   # longer wait for daemon
+          # Set password (official CLI)
           echo "${UNATTENDED_PASSWORD}" | sudo /Applications/AnyDesk.app/Contents/MacOS/AnyDesk --set-password
           echo "Unattended password set to: ${UNATTENDED_PASSWORD}"
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/12_unattended_enabled.png" || true
