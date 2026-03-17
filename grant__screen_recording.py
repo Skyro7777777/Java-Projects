@@ -1,184 +1,327 @@
-name: macOS GUI AnyDesk – Grant Permissions + Unattended Access
+#!/usr/bin/env python3
+"""
+AnyDesk Automation Script – Grants Screen Recording & Accessibility permissions,
+and sets up Unattended Access with password Apple@123.
+All steps are logged and debug screenshots are saved.
+"""
 
-on: workflow_dispatch
+import subprocess
+import time
+import pathlib
+import sys
+import os
+import logging
+from logging.handlers import RotatingFileHandler
 
-jobs:
-  gui:
-    runs-on: macos-latest
-    env:
-      GUI_USER: vncuser
-      GUI_PASS: Apple@123
-      DEBUG_DIR: /tmp/debug_screenshots
-      ANYDESK_DMG_URL: "https://download.anydesk.com/anydesk.dmg"
-      SCRIPT_URL: "https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/grant__screen_recording.py"
-      UNATTENDED_PASSWORD: "Apple@123"
+# ----------------------------------------------------------------------
+# Configuration
+# ----------------------------------------------------------------------
+DEBUG_DIR = pathlib.Path("/tmp/debug_screenshots")
+DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 
-    steps:
-      - name: Prepare debug folder
-        run: |
-          mkdir -p "${DEBUG_DIR}"
-          chmod 777 "${DEBUG_DIR}"
+LOG_FILE = "/tmp/anydesk_automation.log"
+CLICLICK = "/opt/homebrew/bin/cliclick"
+UNATTENDED_PASSWORD = "Apple@123"
+ANYDESK_APP = "/Applications/AnyDesk.app"
+ANYDESK_BIN = f"{ANYDESK_APP}/Contents/MacOS/AnyDesk"
 
-      - name: Create GUI user (vncuser)
-        run: |
-          if ! id -u "${GUI_USER}" >/dev/null 2>&1; then
-            sudo dscl . -create /Users/${GUI_USER}
-            sudo dscl . -create /Users/${GUI_USER} UserShell /bin/bash
-            sudo dscl . -create /Users/${GUI_USER} RealName "VNC User"
-            sudo dscl . -create /Users/${GUI_USER} UniqueID "510"
-            sudo dscl . -create /Users/${GUI_USER} PrimaryGroupID 20
-            sudo dscl . -create /Users/${GUI_USER} NFSHomeDirectory /Users/${GUI_USER}
-            sudo dscl . -passwd /Users/${GUI_USER} "${GUI_PASS}"
-            sudo dscl . -append /Groups/admin GroupMembership ${GUI_USER}
-            sudo createhomedir -c -u ${GUI_USER} >/dev/null 2>&1 || true
-          fi
-          sudo chown -R ${GUI_USER}:staff "${DEBUG_DIR}"
-          chmod -R 777 "${DEBUG_DIR}"
+# ----------------------------------------------------------------------
+# Logging setup
+# ----------------------------------------------------------------------
+logger = logging.getLogger("AnyDeskAutomation")
+logger.setLevel(logging.DEBUG)
 
-      - name: Install Homebrew tools (tesseract, cliclick)
-        run: |
-          brew install tesseract cliclick || true
-          echo "TESSERACT: $(which tesseract || true)"
-          echo "CLICLICK: $(which cliclick || true)"
+# Console handler (prints to stdout)
+console = logging.StreamHandler(sys.stdout)
+console.setLevel(logging.INFO)
+formatter = logging.Formatter('[%(asctime)s] %(levelname)s: %(message)s', datefmt='%H:%M:%S')
+console.setFormatter(formatter)
+logger.addHandler(console)
 
-      - name: Download & Install AnyDesk (portable DMG)
-        run: |
-          set -euxo pipefail
-          curl -L -o /tmp/anydesk.dmg "${ANYDESK_DMG_URL}"
-          hdiutil attach /tmp/anydesk.dmg -mountpoint /Volumes/AnyDesk -nobrowse || true
-          cp -R "/Volumes/AnyDesk/AnyDesk.app" /Applications/ || true
-          hdiutil detach "/Volumes/AnyDesk" || true
-          ls -l /Applications/AnyDesk.app || true
+# File handler (rotates, keeps last 5 MB)
+file_handler = RotatingFileHandler(LOG_FILE, maxBytes=5_000_000, backupCount=1)
+file_handler.setLevel(logging.DEBUG)
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
 
-      - name: Reset TCC + launch AnyDesk
-        run: |
-          sudo -u ${GUI_USER} tccutil reset ScreenCapture com.anydesk.AnyDesk || true
-          sudo -u ${GUI_USER} tccutil reset Accessibility com.anydesk.AnyDesk || true
-          sudo -u ${GUI_USER} open -a "/Applications/AnyDesk.app" || true
-          sleep 20
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/01_after_launch.png" || true
+def log_info(msg):
+    logger.info(msg)
 
-      - name: Run automation script (permissions + add to both panes)
-        run: |
-          set -euxo pipefail
-          if [ -z "${SCRIPT_URL}" ]; then
-            echo "SCRIPT_URL not set"; exit 1
-          fi
-          curl -fsSL "${SCRIPT_URL}" -o /tmp/grant_screen_recording.py
-          sudo chown ${GUI_USER}:staff /tmp/grant_screen_recording.py || true
-          sudo chmod +x /tmp/grant_screen_recording.py || true
-          sudo -u ${GUI_USER} env PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin" python3 /tmp/grant_screen_recording.py || true
-          sleep 15
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/09_after_script.png" || true
+def log_error(msg):
+    logger.error(msg)
 
-      - name: Enable Unattended Access (robust service start + set password)
-        run: |
-          set -euxo pipefail
+def log_debug(msg):
+    logger.debug(msg)
 
-          GUI_USER="${GUI_USER:-vncuser}"
-          UNATTENDED_PASSWORD="${UNATTENDED_PASSWORD:-Apple@123}"
-          DEBUG_DIR="${DEBUG_DIR:-/tmp/debug_screenshots}"
+# ----------------------------------------------------------------------
+# Helper functions
+# ----------------------------------------------------------------------
+def shot(name):
+    """Take a screenshot and save to DEBUG_DIR."""
+    path = DEBUG_DIR / name
+    try:
+        subprocess.run(["/usr/sbin/screencapture", "-x", str(path)], check=False, timeout=10)
+        log_debug(f"Screenshot saved: {name}")
+    except Exception as e:
+        log_error(f"screencapture failed for {name}: {e}")
 
-          # Try to find the AnyDesk binary - prefer expected path, otherwise find first executable in Contents/MacOS
-          AD_BIN="/Applications/AnyDesk.app/Contents/MacOS/AnyDesk"
-          if [ ! -x "${AD_BIN}" ]; then
-            # try alternative names in that folder
-            for f in /Applications/AnyDesk.app/Contents/MacOS/*; do
-              if [ -x "$f" ]; then
-                AD_BIN="$f"
-                break
-              fi
-            done
-          fi
+def run_applescript(script, max_retries=1):
+    """
+    Run AppleScript, return (success, output).
+    If it fails and max_retries > 1, retry after a short delay.
+    """
+    for attempt in range(max_retries):
+        try:
+            result = subprocess.run(['osascript', '-e', script],
+                                    capture_output=True, text=True, timeout=30)
+            if result.returncode == 0:
+                return True, result.stdout.strip()
+            else:
+                log_debug(f"AppleScript attempt {attempt+1} failed: {result.stderr}")
+                if attempt < max_retries - 1:
+                    time.sleep(2)
+        except subprocess.TimeoutExpired:
+            log_error("AppleScript timed out")
+            if attempt < max_retries - 1:
+                time.sleep(2)
+    return False, ""
 
-          echo "[anydesk] Binary resolved to: ${AD_BIN}"
-          if [ ! -x "${AD_BIN}" ]; then
-            echo "ERROR: AnyDesk binary not found or not executable at expected path. Listing /Applications:"
-            ls -l /Applications || true
-            exit 1
-          fi
+def cliclick(x, y):
+    """Click at (x,y) using cliclick; fallback to AppleScript click."""
+    try:
+        subprocess.run([CLICLICK, f"c:{x},{y}"], check=True, timeout=8)
+        log_debug(f"cliclick at ({x},{y})")
+    except Exception:
+        log_debug(f"cliclick failed, trying AppleScript click at ({x},{y})")
+        run_applescript(f'tell application "System Events" to click at {{{x},{y}}}')
 
-          SERVICE_LOG="/tmp/anydesk_service.log"
-          # stop any existing AnyDesk instances
-          pkill -f AnyDesk || true
-          sleep 2
+def wait_for_window(process_name, window_title_contains, timeout=20):
+    """Wait until a window with title containing substring appears."""
+    start = time.time()
+    while time.time() - start < timeout:
+        ok, out = run_applescript(f'''
+            tell application "System Events"
+                if exists process "{process_name}" then
+                    tell process "{process_name}"
+                        if exists (first window whose title contains "{window_title_contains}") then
+                            return "found"
+                        end if
+                    end tell
+                end if
+                return "not found"
+            end tell
+        ''')
+        if "found" in out:
+            return True
+        time.sleep(1)
+    return False
 
-          echo "[anydesk] starting AnyDesk service as root..."
-          sudo env PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin" "${AD_BIN}" --service > "${SERVICE_LOG}" 2>&1 &
+def click_button(process_name, button_title, window_title_contains=None, timeout=10):
+    """Find a button by title in the specified process and click it."""
+    script = f'''
+        tell application "System Events"
+            tell process "{process_name}"
+                set frontmost to true
+    '''
+    if window_title_contains:
+        script += f'set targetWindow to first window whose title contains "{window_title_contains}"\n'
+    else:
+        script += 'set targetWindow to window 1\n'
+    script += f'''
+                try
+                    set theButton to first button of targetWindow whose title is "{button_title}"
+                    click theButton
+                    return "clicked"
+                on error
+                    return "not found"
+                end try
+            end tell
+        end tell
+    '''
+    start = time.time()
+    while time.time() - start < timeout:
+        ok, out = run_applescript(script)
+        if "clicked" in out:
+            log_info(f"Clicked button '{button_title}' in {process_name}")
+            return True
+        time.sleep(1)
+    log_error(f"Could not click button '{button_title}' in {process_name}")
+    return False
 
-          # wait for service readiness
-          echo "[anydesk] waiting for service to respond..."
-          READY=0
-          for i in $(seq 1 30); do
-            sleep 1
-            if sudo "${AD_BIN}" --get-id >/tmp/anydesk_id.out 2>/tmp/anydesk_err.out; then
-              echo "[anydesk] service responsive (iteration ${i})"
-              READY=1
-              break
-            fi
-          done
+def type_text(text):
+    """Type text using keystrokes."""
+    run_applescript(f'''
+        tell application "System Events"
+            keystroke "{text}"
+        end tell
+    ''')
+    log_debug(f"Typed text: {text}")
 
-          if [ "${READY}" -ne 1 ]; then
-            echo "[anydesk] service did not become responsive in time. Collecting diagnostics..."
-            ps auxww | egrep "AnyDesk|anydesk" || true
-            tail -n 200 "${SERVICE_LOG}" || true
-            cat /tmp/anydesk_err.out || true
-            # continue to attempt set-password once anyway
-          fi
+def press_return():
+    run_applescript('tell application "System Events" to key code 36')
 
-          echo "[anydesk] attempting to set unattended password (retries)..."
-          SET_OK=0
-          for j in $(seq 1 6); do
-            echo "[anydesk] set-password attempt ${j}"
-            if echo "${UNATTENDED_PASSWORD}" | sudo "${AD_BIN}" --set-password >/tmp/anydesk_setpw_out 2>/tmp/anydesk_setpw_err; then
-              echo "[anydesk] password set (attempt ${j})"
-              SET_OK=1
-              break
-            else
-              echo "[anydesk] set-password failed (attempt ${j})"
-              sleep 2
-            fi
-          done
+def press_tab():
+    run_applescript('tell application "System Events" to key code 48')
 
-          if [ "${SET_OK}" -ne 1 ]; then
-            echo "[anydesk] FAILED to set unattended password — saving diagnostics"
-            ps auxww | egrep "AnyDesk|anydesk" || true
-            tail -n 200 "${SERVICE_LOG}" || true
-            echo "--- /tmp/anydesk_setpw_err ---"
-            cat /tmp/anydesk_setpw_err || true
-            echo "--- /tmp/anydesk_setpw_out ---"
-            cat /tmp/anydesk_setpw_out || true
-          fi
+# ----------------------------------------------------------------------
+# Main automation steps
+# ----------------------------------------------------------------------
+def main():
+    log_info("=== AnyDesk Automation Started ===")
+    shot("00_start.png")
 
-          # screenshots & copy logs to debug dir (artifact)
-          sudo -u "${GUI_USER}" /usr/sbin/screencapture -x "${DEBUG_DIR}/12_unattended_enabled.png" || true
-          cp -f "${SERVICE_LOG}" "${DEBUG_DIR}/anydesk_service.log" || true
-          cp -f /tmp/anydesk_id.out "${DEBUG_DIR}/anydesk_id.out" || true
-          cp -f /tmp/anydesk_err.out "${DEBUG_DIR}/anydesk_err.out" || true
-          cp -f /tmp/anydesk_setpw_err "${DEBUG_DIR}/anydesk_setpw_err" || true
-          cp -f /tmp/anydesk_setpw_out "${DEBUG_DIR}/anydesk_setpw_out" || true
+    # Ensure AnyDesk is running
+    subprocess.run(["open", "-a", ANYDESK_APP], check=False)
+    time.sleep(5)
+    shot("01_after_launch.png")
 
-      - name: Final cleanup + screenshot
-        run: |
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x /tmp/anydesk_final.png || true
-          sudo chown ${GUI_USER}:staff /tmp/anydesk_final.png || true
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/11_final_anydesk.png" || true
+    # Wait for main window to appear (it may show permissions status)
+    if not wait_for_window("AnyDesk", "AnyDesk", timeout=30):
+        log_error("AnyDesk main window did not appear. Exiting.")
+        shot("01_error_no_window.png")
+        sys.exit(1)
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: all-screenshots
-          path: |
-            /tmp/debug_screenshots/**
-            /tmp/anydesk_final.png
-            /tmp/anydesk_service.log
-            /tmp/anydesk_id.out
-            /tmp/anydesk_err.out
-            /tmp/anydesk_setpw_err
-            /tmp/anydesk_setpw_out
-          if-no-files-found: ignore
+    # ---- Step 1: Grant Screen Recording permission ----
+    log_info("Granting Screen Recording permission...")
+    # Click the "Open Screen Recording preferences" button in AnyDesk window
+    if not click_button("AnyDesk", "Open Screen Recording preferences", timeout=15):
+        log_error("Could not find 'Open Screen Recording preferences' button. Trying fallback.")
+        # fallback: maybe the button is called differently? Use coordinate?
+        cliclick(500, 400)  # rough area where button might be
+        time.sleep(3)
 
-      - name: Keep runner alive
-        run: |
-          echo "Runner will remain alive for 6 hours so you can fetch artifacts and connect if needed."
-          for i in {1..6}; do sleep 3600; done
+    # Wait for System Settings Screen Recording pane
+    if not wait_for_window("System Settings", "Screen Recording", timeout=20):
+        log_error("Screen Recording pane did not open.")
+    shot("02_screen_recording_pane.png")
+
+    # Click the "+" button to add an app
+    if not click_button("System Settings", "+", timeout=10):
+        log_error("Could not find '+' button. Using fallback coordinate.")
+        cliclick(200, 300)  # typical left side
+        time.sleep(2)
+
+    # Type the path to AnyDesk.app and press Return twice
+    type_text("/Applications/AnyDesk.app")
+    time.sleep(2)
+    press_return()
+    time.sleep(2)
+    press_return()
+    time.sleep(3)
+
+    # Toggle the switch (approximate position; could also use button title "AnyDesk")
+    cliclick(1480, 420)   # based on your earlier script
+    time.sleep(2)
+    shot("03_screen_recording_toggled.png")
+
+    # ---- Step 2: Grant Accessibility permission ----
+    log_info("Granting Accessibility permission...")
+    # Bring AnyDesk to front and click "Request Accessibility"
+    subprocess.run(["open", "-a", ANYDESK_APP], check=False)
+    time.sleep(2)
+    if not click_button("AnyDesk", "Request Accessibility", timeout=15):
+        log_error("Could not find 'Request Accessibility' button. Trying fallback.")
+        cliclick(500, 500)  # another rough area
+        time.sleep(3)
+
+    # Wait for Accessibility pane
+    if not wait_for_window("System Settings", "Accessibility", timeout=20):
+        log_error("Accessibility pane did not open.")
+    shot("04_accessibility_pane.png")
+
+    # Click "+" button
+    if not click_button("System Settings", "+", timeout=10):
+        cliclick(200, 300)
+        time.sleep(2)
+
+    type_text("/Applications/AnyDesk.app")
+    time.sleep(2)
+    press_return()
+    time.sleep(2)
+    press_return()
+    time.sleep(3)
+
+    # Toggle switch
+    cliclick(1480, 420)
+    time.sleep(2)
+    shot("05_accessibility_toggled.png")
+
+    # ---- Handle password prompt if it appears ----
+    log_info("Checking for password prompt...")
+    if wait_for_window("System Events", "Privacy & Security", timeout=5):
+        type_text(UNATTENDED_PASSWORD)
+        time.sleep(1)
+        press_return()
+        time.sleep(2)
+        # Click "Modify Settings" if present
+        click_button("System Events", "Modify Settings", timeout=3)
+        shot("06_password_handled.png")
+
+    # ---- Close AnyDesk permissions status window ----
+    log_info("Closing permissions status window...")
+    subprocess.run(["open", "-a", ANYDESK_APP], check=False)
+    time.sleep(3)
+    # Try to click "Close" button on status window
+    click_button("AnyDesk", "Close", window_title_contains="System Permissions Status", timeout=5)
+    shot("07_status_closed.png")
+
+    # ---- Set Unattended Access password (command line method) ----
+    log_info("Setting Unattended Access password via command line...")
+    # Ensure AnyDesk is running (daemon should be up)
+    subprocess.run(["open", "-a", ANYDESK_APP], check=False)
+    time.sleep(5)
+
+    # Run the password command as the current user (no sudo!)
+    try:
+        result = subprocess.run(
+            [ANYDESK_BIN, "--set-password"],
+            input=UNATTENDED_PASSWORD,
+            capture_output=True,
+            text=True,
+            timeout=20
+        )
+        if result.returncode == 0:
+            log_info("Unattended password set successfully via command line.")
+        else:
+            log_error(f"Command failed with code {result.returncode}: {result.stderr}")
+            log_info("Falling back to GUI method for password.")
+            # Fallback: automate settings GUI
+            subprocess.run(["open", "-a", ANYDESK_APP], check=False)
+            time.sleep(5)
+            # Click the settings icon (e.g., three-dot menu) – coordinates may need adjustment
+            cliclick(150, 50)   # top-left corner menu
+            time.sleep(2)
+            # Click "Settings"
+            click_button("AnyDesk", "Settings", timeout=5)
+            time.sleep(3)
+            # Navigate to "Unattended Access" (use tab)
+            for _ in range(4):
+                press_tab()
+                time.sleep(0.5)
+            press_return()  # open section
+            time.sleep(2)
+            # Type password
+            type_text(UNATTENDED_PASSWORD)
+            time.sleep(1)
+            press_return()
+            log_info("Password set via GUI (hopefully).")
+    except Exception as e:
+        log_error(f"Exception during password setting: {e}")
+
+    shot("08_password_set.png")
+
+    # ---- Final: capture main AnyDesk window with ID ----
+    subprocess.run(["open", "-a", ANYDESK_APP], check=False)
+    time.sleep(10)
+    shot("09_final_anydesk_main.png")
+    # Also capture to standard location for workflow
+    subprocess.run(["/usr/sbin/screencapture", "-x", "/tmp/anydesk_final.png"], check=False)
+
+    log_info("=== AnyDesk Automation Completed ===")
+    log_info(f"Log file saved to {LOG_FILE}")
+    # Copy log to debug dir for upload
+    import shutil
+    shutil.copy(LOG_FILE, DEBUG_DIR / "automation.log")
+
+if __name__ == "__main__":
+    main()
