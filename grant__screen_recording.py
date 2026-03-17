@@ -23,7 +23,7 @@ def cliclick(x, y):
     subprocess.run([CLICLICK, f"c:{x},{y}"], timeout=8, check=False)
     log(f"Clicked ({x},{y})")
 
-log("=== Remotix Agent Screen Recording Automation ===")
+log("=== AnyDesk Screen Recording Automation ===")
 shot("00_start.png")
 
 # Trigger initial permission
@@ -31,39 +31,41 @@ subprocess.run(["/usr/sbin/screencapture", "-x", "/tmp/dummy.png"])
 time.sleep(4)
 shot("01_after_trigger.png")
 
-# Launch Remotix Agent (already done in workflow, but ensure frontmost)
-applescript('tell application "Remotix Agent" to activate')
-time.sleep(3)
+# Activate AnyDesk
+applescript('tell application "AnyDesk" to activate')
+time.sleep(4)
 
-# Click the built-in "Request Screen Recording Permission" button (exact title!)
-log("Clicking 'Request Screen Recording Permission' button...")
+# Click the permission request button (standard title on AnyDesk macOS)
+log("Clicking permission request button...")
 applescript('''
     tell application "System Events"
-        tell process "Remotix Agent"
-            click (first button of window 1 whose title contains "Request Screen Recording Permission")
+        tell process "AnyDesk"
+            try
+                click (first button of window 1 whose title contains "Open Screen Recording" or title contains "Grant" or title contains "Request")
+            end try
         end tell
     end tell
 ''')
-time.sleep(5)
-shot("02_after_request_button.png")
+time.sleep(6)
+shot("02_after_permission_click.png")
 
-# The dialog should now be open → click "Open System Preferences"
-log("Clicking 'Open System Preferences' in dialog...")
+# Click "Open System Preferences" / "Open System Settings" in the dialog
+log("Opening System Settings from dialog...")
 applescript('''
     tell application "System Events"
-        click (first button of window 1 whose title contains "Open System Preferences")
+        click (first button of window 1 whose title contains "Open System" or title contains "Preferences" or title contains "Settings")
     end tell
 ''')
-time.sleep(6)
+time.sleep(8)
 shot("03_settings_opened.png")
 
-# In Screen Recording pane → toggle Remotix Agent (or click + if needed)
-log("Toggling Remotix Agent in settings...")
-cliclick(1480, 420)  # switch position on runner
-time.sleep(3)
+# Toggle AnyDesk in Screen Recording pane
+log("Toggling AnyDesk switch...")
+cliclick(1480, 420)   # reliable position on GitHub runner
+time.sleep(4)
 shot("04_after_toggle.png")
 
-# Password prompt if appears
+# Password prompt if it appears
 applescript('''
     tell application "System Events"
         if exists (button "Modify Settings") then
@@ -75,11 +77,11 @@ applescript('''
 ''')
 time.sleep(4)
 
-# Quit & reopen Remotix Agent
-applescript('tell application "Remotix Agent" to quit')
-time.sleep(5)
-applescript('tell application "Remotix Agent" to activate')
-time.sleep(10)
+# Quit & reopen AnyDesk so permission takes effect
+applescript('tell application "AnyDesk" to quit')
+time.sleep(6)
+applescript('tell application "AnyDesk" to activate')
+time.sleep(12)
 shot("07_final.png")
 
-log("=== Done - check 07_final.png for Remotix Agent ID ===")
+log("=== Done — check 07_final.png for AnyDesk ID ===")
