@@ -10,8 +10,8 @@ jobs:
       GUI_PASS: Apple@123
       DEBUG_DIR: /tmp/debug_screenshots
       ANYDESK_DMG_URL: "https://download.anydesk.com/anydesk.dmg"
-      APPLESCRIPT_URL: "YOUR_RAW_APPLESCRIPT_URL_HERE"   # <- put the raw URL to clear_popups.applescript
-      SCRIPT_URL: "YOUR_RAW_PYTHON_SCRIPT_URL_HERE"      # <- optional: put the raw URL to grant_screen_recording.py
+      APPLESCRIPT_URL: "https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/clear_popups.applescript"   # <- put the raw URL to clear_popups.applescript
+      SCRIPT_URL: "https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/grant__screen_recording.py"      # <- optional: put the raw URL to grant_screen_recording.py
       UNATTENDED_PASSWORD: "Apple@123"
 
     steps:
