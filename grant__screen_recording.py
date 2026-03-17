@@ -1,128 +1,184 @@
-#!/usr/bin/env python3
-import subprocess
-import time
-import pathlib
+name: macOS GUI AnyDesk – Grant Permissions + Unattended Access
 
-DEBUG = pathlib.Path("/tmp/debug_screenshots")
-DEBUG.mkdir(parents=True, exist_ok=True)
+on: workflow_dispatch
 
-CLICLICK = "/opt/homebrew/bin/cliclick"
+jobs:
+  gui:
+    runs-on: macos-latest
+    env:
+      GUI_USER: vncuser
+      GUI_PASS: Apple@123
+      DEBUG_DIR: /tmp/debug_screenshots
+      ANYDESK_DMG_URL: "https://download.anydesk.com/anydesk.dmg"
+      SCRIPT_URL: "https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/grant__screen_recording.py"
+      UNATTENDED_PASSWORD: "Apple@123"
 
-def log(msg):
-    print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+    steps:
+      - name: Prepare debug folder
+        run: |
+          mkdir -p "${DEBUG_DIR}"
+          chmod 777 "${DEBUG_DIR}"
 
-def shot(name):
-    subprocess.run(["/usr/sbin/screencapture", "-x", str(DEBUG / name)], check=False)
-    log(f"Screenshot: {name}")
+      - name: Create GUI user (vncuser)
+        run: |
+          if ! id -u "${GUI_USER}" >/dev/null 2>&1; then
+            sudo dscl . -create /Users/${GUI_USER}
+            sudo dscl . -create /Users/${GUI_USER} UserShell /bin/bash
+            sudo dscl . -create /Users/${GUI_USER} RealName "VNC User"
+            sudo dscl . -create /Users/${GUI_USER} UniqueID "510"
+            sudo dscl . -create /Users/${GUI_USER} PrimaryGroupID 20
+            sudo dscl . -create /Users/${GUI_USER} NFSHomeDirectory /Users/${GUI_USER}
+            sudo dscl . -passwd /Users/${GUI_USER} "${GUI_PASS}"
+            sudo dscl . -append /Groups/admin GroupMembership ${GUI_USER}
+            sudo createhomedir -c -u ${GUI_USER} >/dev/null 2>&1 || true
+          fi
+          sudo chown -R ${GUI_USER}:staff "${DEBUG_DIR}"
+          chmod -R 777 "${DEBUG_DIR}"
 
-def applescript(code):
-    r = subprocess.run(['osascript', '-e', code], capture_output=True, text=True)
-    return r.returncode == 0, r.stdout.strip()
+      - name: Install Homebrew tools (tesseract, cliclick)
+        run: |
+          brew install tesseract cliclick || true
+          echo "TESSERACT: $(which tesseract || true)"
+          echo "CLICLICK: $(which cliclick || true)"
 
-def cliclick(x, y):
-    subprocess.run([CLICLICK, f"c:{x},{y}"], timeout=8, check=False)
-    log(f"Clicked ({x},{y})")
+      - name: Download & Install AnyDesk (portable DMG)
+        run: |
+          set -euxo pipefail
+          curl -L -o /tmp/anydesk.dmg "${ANYDESK_DMG_URL}"
+          hdiutil attach /tmp/anydesk.dmg -mountpoint /Volumes/AnyDesk -nobrowse || true
+          cp -R "/Volumes/AnyDesk/AnyDesk.app" /Applications/ || true
+          hdiutil detach "/Volumes/AnyDesk" || true
+          ls -l /Applications/AnyDesk.app || true
 
-log("=== AnyDesk Permissions Automation v2 (Screen Recording + Accessibility) ===")
-shot("00_start.png")
+      - name: Reset TCC + launch AnyDesk
+        run: |
+          sudo -u ${GUI_USER} tccutil reset ScreenCapture com.anydesk.AnyDesk || true
+          sudo -u ${GUI_USER} tccutil reset Accessibility com.anydesk.AnyDesk || true
+          sudo -u ${GUI_USER} open -a "/Applications/AnyDesk.app" || true
+          sleep 20
+          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/01_after_launch.png" || true
 
-applescript('tell application "AnyDesk" to activate')
-time.sleep(3)
-shot("01_status_window.png")
+      - name: Run automation script (permissions + add to both panes)
+        run: |
+          set -euxo pipefail
+          if [ -z "${SCRIPT_URL}" ]; then
+            echo "SCRIPT_URL not set"; exit 1
+          fi
+          curl -fsSL "${SCRIPT_URL}" -o /tmp/grant_screen_recording.py
+          sudo chown ${GUI_USER}:staff /tmp/grant_screen_recording.py || true
+          sudo chmod +x /tmp/grant_screen_recording.py || true
+          sudo -u ${GUI_USER} env PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin" python3 /tmp/grant_screen_recording.py || true
+          sleep 15
+          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/09_after_script.png" || true
 
-# === SCREEN RECORDING PANE ===
-log("Opening Screen Recording preferences...")
-applescript('''
-    tell application "System Events"
-        tell process "AnyDesk"
-            click (first button of window 1 whose title contains "Open Screen Recording preferences")
-        end tell
-    end tell
-''')
-time.sleep(7)
-shot("02_screen_recording_pane.png")
+      - name: Enable Unattended Access (robust service start + set password)
+        run: |
+          set -euxo pipefail
 
-log("Adding + AnyDesk in Screen Recording...")
-applescript('''
-    tell application "System Events"
-        tell process "System Settings"
-            click button "+" of scroll area 1 of group 1 of window 1
-        end tell
-    end tell
-''')
-time.sleep(4)
-applescript('''
-    tell application "System Events"
-        keystroke "/Applications/AnyDesk.app"
-        delay 1.5
-        key code 36
-        delay 2
-        key code 36
-    end tell
-''')
-time.sleep(6)
-cliclick(1480, 420)  # toggle switch
-time.sleep(4)
-shot("03_screen_recording_granted.png")
+          GUI_USER="${GUI_USER:-vncuser}"
+          UNATTENDED_PASSWORD="${UNATTENDED_PASSWORD:-Apple@123}"
+          DEBUG_DIR="${DEBUG_DIR:-/tmp/debug_screenshots}"
 
-# === ACCESSIBILITY PANE ===
-log("Opening Accessibility pane...")
-applescript('''
-    tell application "System Events"
-        click (first button of window 1 whose title contains "Request Accessibility")
-    end tell
-''')
-time.sleep(7)
-shot("04_accessibility_pane.png")
+          # Try to find the AnyDesk binary - prefer expected path, otherwise find first executable in Contents/MacOS
+          AD_BIN="/Applications/AnyDesk.app/Contents/MacOS/AnyDesk"
+          if [ ! -x "${AD_BIN}" ]; then
+            # try alternative names in that folder
+            for f in /Applications/AnyDesk.app/Contents/MacOS/*; do
+              if [ -x "$f" ]; then
+                AD_BIN="$f"
+                break
+              fi
+            done
+          fi
 
-log("Adding + AnyDesk in Accessibility...")
-applescript('''
-    tell application "System Events"
-        tell process "System Settings"
-            click button "+" of scroll area 1 of group 1 of window 1
-        end tell
-    end tell
-''')
-time.sleep(4)
-applescript('''
-    tell application "System Events"
-        keystroke "/Applications/AnyDesk.app"
-        delay 1.5
-        key code 36
-        delay 2
-        key code 36
-    end tell
-''')
-time.sleep(6)
-cliclick(1480, 420)  # toggle switch
-time.sleep(4)
-shot("05_accessibility_granted.png")
+          echo "[anydesk] Binary resolved to: ${AD_BIN}"
+          if [ ! -x "${AD_BIN}" ]; then
+            echo "ERROR: AnyDesk binary not found or not executable at expected path. Listing /Applications:"
+            ls -l /Applications || true
+            exit 1
+          fi
 
-# Password prompt (covers both)
-applescript('''
-    tell application "System Events"
-        if exists (button "Modify Settings") then
-            keystroke "Apple@123"
-            delay 1
-            key code 36
-        end if
-    end tell
-''')
-time.sleep(4)
+          SERVICE_LOG="/tmp/anydesk_service.log"
+          # stop any existing AnyDesk instances
+          pkill -f AnyDesk || true
+          sleep 2
 
-# Close status window + force main ID window
-log("Closing permissions status window...")
-applescript('''
-    tell application "System Events"
-        if exists (button "Close" of window 1 whose title contains "System Permissions Status") then
-            click button "Close" of window 1
-        end if
-    end tell
-''')
-applescript('tell application "AnyDesk" to quit')
-time.sleep(6)
-applescript('tell application "AnyDesk" to activate')
-time.sleep(12)
-shot("07_final_anydesk_main_window.png")
+          echo "[anydesk] starting AnyDesk service as root..."
+          sudo env PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin" "${AD_BIN}" --service > "${SERVICE_LOG}" 2>&1 &
 
-log("=== Automation finished — Main window with ID should now be visible ===")
+          # wait for service readiness
+          echo "[anydesk] waiting for service to respond..."
+          READY=0
+          for i in $(seq 1 30); do
+            sleep 1
+            if sudo "${AD_BIN}" --get-id >/tmp/anydesk_id.out 2>/tmp/anydesk_err.out; then
+              echo "[anydesk] service responsive (iteration ${i})"
+              READY=1
+              break
+            fi
+          done
+
+          if [ "${READY}" -ne 1 ]; then
+            echo "[anydesk] service did not become responsive in time. Collecting diagnostics..."
+            ps auxww | egrep "AnyDesk|anydesk" || true
+            tail -n 200 "${SERVICE_LOG}" || true
+            cat /tmp/anydesk_err.out || true
+            # continue to attempt set-password once anyway
+          fi
+
+          echo "[anydesk] attempting to set unattended password (retries)..."
+          SET_OK=0
+          for j in $(seq 1 6); do
+            echo "[anydesk] set-password attempt ${j}"
+            if echo "${UNATTENDED_PASSWORD}" | sudo "${AD_BIN}" --set-password >/tmp/anydesk_setpw_out 2>/tmp/anydesk_setpw_err; then
+              echo "[anydesk] password set (attempt ${j})"
+              SET_OK=1
+              break
+            else
+              echo "[anydesk] set-password failed (attempt ${j})"
+              sleep 2
+            fi
+          done
+
+          if [ "${SET_OK}" -ne 1 ]; then
+            echo "[anydesk] FAILED to set unattended password — saving diagnostics"
+            ps auxww | egrep "AnyDesk|anydesk" || true
+            tail -n 200 "${SERVICE_LOG}" || true
+            echo "--- /tmp/anydesk_setpw_err ---"
+            cat /tmp/anydesk_setpw_err || true
+            echo "--- /tmp/anydesk_setpw_out ---"
+            cat /tmp/anydesk_setpw_out || true
+          fi
+
+          # screenshots & copy logs to debug dir (artifact)
+          sudo -u "${GUI_USER}" /usr/sbin/screencapture -x "${DEBUG_DIR}/12_unattended_enabled.png" || true
+          cp -f "${SERVICE_LOG}" "${DEBUG_DIR}/anydesk_service.log" || true
+          cp -f /tmp/anydesk_id.out "${DEBUG_DIR}/anydesk_id.out" || true
+          cp -f /tmp/anydesk_err.out "${DEBUG_DIR}/anydesk_err.out" || true
+          cp -f /tmp/anydesk_setpw_err "${DEBUG_DIR}/anydesk_setpw_err" || true
+          cp -f /tmp/anydesk_setpw_out "${DEBUG_DIR}/anydesk_setpw_out" || true
+
+      - name: Final cleanup + screenshot
+        run: |
+          sudo -u ${GUI_USER} /usr/sbin/screencapture -x /tmp/anydesk_final.png || true
+          sudo chown ${GUI_USER}:staff /tmp/anydesk_final.png || true
+          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/11_final_anydesk.png" || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: all-screenshots
+          path: |
+            /tmp/debug_screenshots/**
+            /tmp/anydesk_final.png
+            /tmp/anydesk_service.log
+            /tmp/anydesk_id.out
+            /tmp/anydesk_err.out
+            /tmp/anydesk_setpw_err
+            /tmp/anydesk_setpw_out
+          if-no-files-found: ignore
+
+      - name: Keep runner alive
+        run: |
+          echo "Runner will remain alive for 6 hours so you can fetch artifacts and connect if needed."
+          for i in {1..6}; do sleep 3600; done
