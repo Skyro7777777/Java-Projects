@@ -1,4 +1,4 @@
-name: macOS AnyDesk Robust Install + Unattended
+name: AnyDesk macOS — clear popups, add permissions, start service, set password
 
 on: workflow_dispatch
 
@@ -19,7 +19,7 @@ jobs:
           mkdir -p "${DEBUG_DIR}"
           chmod 777 "${DEBUG_DIR}"
 
-      - name: Create GUI user (vncuser)
+      - name: Create GUI user (vncuser) and chown debug dir
         run: |
           if ! id -u "${GUI_USER}" >/dev/null 2>&1; then
             sudo dscl . -create /Users/${GUI_USER}
@@ -35,9 +35,11 @@ jobs:
           sudo chown -R ${GUI_USER}:staff "${DEBUG_DIR}"
           chmod -R 777 "${DEBUG_DIR}"
 
-      - name: Install Homebrew tools (optional)
+      - name: Install optional tools (tesseract, cliclick)
         run: |
           brew install tesseract cliclick || true
+          which tesseract || true
+          which cliclick || true
 
       - name: Download & Install AnyDesk (portable DMG)
         run: |
@@ -48,157 +50,168 @@ jobs:
           hdiutil detach "/Volumes/AnyDesk" || true
           ls -l /Applications/AnyDesk.app || true
 
-      - name: Discover bundle id & binary, capture Info.plist (diagnostics)
+      - name: Aggressively clear any modal popups (click Open / Open System Settings / Allow)
         run: |
-          set -euxo pipefail
+          cat > /tmp/clear_popups.applescript <<'AS'
+  tell application "System Events"
+    -- loop to aggressively click popup buttons that block flow
+    repeat 18 times
+      try
+        repeat with p in (every process)
+          try
+            repeat with w in (every window of p)
+              try
+                -- common buttons on permission dialogs
+                if exists button "Open System Settings" of w then click button "Open System Settings" of w
+                if exists button "Open System Preferences" of w then click button "Open System Preferences" of w
+                if exists button "Allow" of w then click button "Allow" of w
+                if exists button "Open" of w then click button "Open" of w
+                if exists button "OK" of w then click button "OK" of w
+                if exists button "Enable" of w then click button "Enable" of w
+              end try
+            end repeat
+          end try
+        end repeat
+      end try
+      delay 0.6
+    end repeat
+  end tell
+  AS
+          sudo chown ${GUI_USER}:staff /tmp/clear_popups.applescript || true
+          # run as gui user so sheets/windows are owned and visible to that user
+          sudo -u ${GUI_USER} /usr/bin/osascript /tmp/clear_popups.applescript || true
+          # save screenshot for diagnosis after clears
+          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/00_after_clear_popups.png" || true
+
+      - name: Launch AnyDesk GUI (so app triggers its permission dialog)
+        run: |
+          sudo -u ${GUI_USER} open -a "/Applications/AnyDesk.app" || true
+          sleep 6
+          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/01_after_launch.png" || true
+
+      - name: If popup reappears, click Open System Settings (repeat)
+        run: |
+          # second attempt to clear any popup that appeared after launching app
+          sudo -u ${GUI_USER} /usr/bin/osascript /tmp/clear_popups.applescript || true
+          sleep 1
+          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/02_after_second_clear.png" || true
+
+      - name: Discover AnyDesk bundle id & binary, dump Info.plist
+        run: |
           APP="/Applications/AnyDesk.app"
-          INFO_PLIST="${APP}/Contents/Info.plist"
-          echo "INFO_PLIST: ${INFO_PLIST}"
-          if [ -f "${INFO_PLIST}" ]; then
-            echo "Dumping CFBundleIdentifier and Info:"
-            /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "${INFO_PLIST}" 2>/dev/null || true
-            /usr/libexec/PlistBuddy -c "Print" "${INFO_PLIST}" | sed -n '1,200p' || true
-            # fallback: plutil readable print
-            plutil -p "${INFO_PLIST}" | sed -n '1,200p' || true
+          INFO="${APP}/Contents/Info.plist"
+          echo "INFO: ${INFO}"
+          if [ -f "${INFO}" ]; then
+            /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "${INFO}" 2>/dev/null || true
+            plutil -p "${INFO}" | sed -n '1,150p' || true
           else
-            echo "Info.plist not found at expected path."
+            echo "Info.plist not found"
             ls -R "${APP}" || true
           fi
-
-          # discover any executable inside Contents/MacOS
-          if [ -d "${APP}/Contents/MacOS" ]; then
-            echo "Executables under Contents/MacOS:"
-            ls -l "${APP}/Contents/MacOS" || true
-          fi
-
-          # write discovered values for the workflow to pick up
-          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "${INFO_PLIST}" 2>/dev/null || true)
-          if [ -z "$BUNDLE_ID" ]; then
-            # fallback attempt with defaults (sometimes works)
-            BUNDLE_ID=$(defaults read "${APP}/Contents/Info" CFBundleIdentifier 2>/dev/null || true)
-          fi
-          echo "BUNDLE_ID=${BUNDLE_ID}" > /tmp/anydesk_discover.env
-          # discover binary path
+          # save discovered values for next step
+          BUNDLE=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "${INFO}" 2>/dev/null || true)
+          if [ -n "${BUNDLE}" ]; then echo "BUNDLE_ID=${BUNDLE}" > /tmp/anydesk_discover.env; fi
           BIN_CAND=$(ls -1 "${APP}/Contents/MacOS" 2>/dev/null | head -n1 || true)
-          if [ -n "${BIN_CAND}" ]; then
-            echo "BINARY=${APP}/Contents/MacOS/${BIN_CAND}" >> /tmp/anydesk_discover.env
-          fi
-          echo "Saved discovery to /tmp/anydesk_discover.env"
-          cat /tmp/anydesk_discover.env
+          if [ -n "${BIN_CAND}" ]; then echo "BINARY=${APP}/Contents/MacOS/${BIN_CAND}" >> /tmp/anydesk_discover.env; fi
+          echo "Saved /tmp/anydesk_discover.env:"
+          cat /tmp/anydesk_discover.env || true
+          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/03_info_plist.png" || true
 
-      - name: Reset TCC for discovered bundle id (if available)
+      - name: Reset TCC for discovered bundle id (if found) and dump TCC DB
         run: |
-          set -euxo pipefail
-          if [ -f /tmp/anydesk_discover.env ]; then
-            . /tmp/anydesk_discover.env
-          fi
+          if [ -f /tmp/anydesk_discover.env ]; then . /tmp/anydesk_discover.env; fi
           if [ -n "${BUNDLE_ID}" ]; then
-            echo "Resetting tcc for bundle id: ${BUNDLE_ID}"
+            echo "Reset tcc for ${BUNDLE_ID}"
             sudo -u ${GUI_USER} tccutil reset ScreenCapture "${BUNDLE_ID}" || true
             sudo -u ${GUI_USER} tccutil reset Accessibility "${BUNDLE_ID}" || true
             sudo -u ${GUI_USER} tccutil reset ScreenRecording "${BUNDLE_ID}" || true
           else
-            echo "No bundle id discovered; skipping tcc reset (will capture diagnostics)."
+            echo "No bundle id found; skipping tcc reset"
           fi
-          # dump current tcc db permissions (best-effort) for diagnostics
-          sqlite3 ~/Library/Application\ Support/com.apple.TCC/TCC.db "SELECT * FROM access" >/tmp/tcc_access_dump.txt 2>/dev/null || true
-          cp -f /tmp/tcc_access_dump.txt "${DEBUG_DIR}/tcc_access_dump.txt" || true
+          # best-effort dump of TCC DB (may require permission)
+          if [ -f "${HOME}/Library/Application Support/com.apple.TCC/TCC.db" ]; then
+            sqlite3 "${HOME}/Library/Application Support/com.apple.TCC/TCC.db" "select * from access;" > /tmp/tcc_access_dump.txt || true
+            cp -f /tmp/tcc_access_dump.txt "${DEBUG_DIR}/tcc_access_dump.txt" || true
+          fi
 
-      - name: Launch AnyDesk GUI as vncuser (so UI prompts appear)
+      - name: Run permission-granting script (UI fallback) as GUI user
         run: |
-          sudo -u ${GUI_USER} open -a "/Applications/AnyDesk.app" || true
-          sleep 8
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/01_after_launch.png" || true
+          # Fetch user-supplied script that tries to open System Settings and add app
+          if [ -n "${SCRIPT_URL}" ]; then
+            curl -fsSL "${SCRIPT_URL}" -o /tmp/grant_screen_recording.py || true
+            sudo chown ${GUI_USER}:staff /tmp/grant_screen_recording.py || true
+            sudo chmod +x /tmp/grant_screen_recording.py || true
+            sudo -u ${GUI_USER} env PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin" python3 /tmp/grant_screen_recording.py || true
+          fi
+          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/04_after_grant_script.png" || true
 
-      - name: Try best-effort UI automation to add app to permissions (open settings + press +)
-        run: |
-          # attempt to call your existing script to add permission entries (best-effort)
-          curl -fsSL "${SCRIPT_URL}" -o /tmp/grant_screen_recording.py || true
-          sudo chown ${GUI_USER}:staff /tmp/grant_screen_recording.py || true
-          sudo chmod +x /tmp/grant_screen_recording.py || true
-          sudo -u ${GUI_USER} env PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin" python3 /tmp/grant_screen_recording.py || true
-          sleep 6
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/02_after_grant_script.png" || true
-
-      - name: Start AnyDesk service using discovered binary & robust set-password
+      - name: Start AnyDesk service + set unattended password (robust)
         run: |
           set -euxo pipefail
-          # source the discovery file
-          if [ -f /tmp/anydesk_discover.env ]; then
-            . /tmp/anydesk_discover.env
-          fi
+          # source discovery
+          if [ -f /tmp/anydesk_discover.env ]; then . /tmp/anydesk_discover.env; fi
           APP="/Applications/AnyDesk.app"
-          SERVICE_LOG="/tmp/anydesk_service.log"
-          # pick binary
+          # resolve binary
           if [ -n "${BINARY}" ] && [ -x "${BINARY}" ]; then
             AD_BIN="${BINARY}"
           else
-            # fallback: find any executable in Contents/MacOS
             AD_BIN=$(find "${APP}/Contents/MacOS" -type f -perm +111 2>/dev/null | head -n1 || true)
           fi
-          echo "Resolved AnyDesk binary: ${AD_BIN}"
+          echo "AnyDesk binary: ${AD_BIN}"
           if [ -z "${AD_BIN}" ] || [ ! -x "${AD_BIN}" ]; then
-            echo "ERROR: AnyDesk executable not found or not executable."
+            echo "ERROR: anydesk binary not found"
             ls -l "${APP}/Contents/MacOS" || true
             exit 1
           fi
 
-          # stop old processes
+          SERVICE_LOG="/tmp/anydesk_service.log"
           pkill -f AnyDesk || true
-          sleep 2
+          sleep 1
 
-          echo "Starting AnyDesk service (background) with ${AD_BIN}"
+          echo "Starting AnyDesk service..."
           sudo env PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin" "${AD_BIN}" --service > "${SERVICE_LOG}" 2>&1 &
 
-          # wait for CLI to respond
+          # poll for CLI responsiveness
           READY=0
           for i in $(seq 1 30); do
             sleep 1
             if sudo "${AD_BIN}" --get-id >/tmp/anydesk_id.out 2>/tmp/anydesk_err.out; then
-              echo "AnyDesk CLI responsive (after ${i}s)"
               READY=1
+              echo "AnyDesk CLI ready after ${i}s"
               break
             fi
           done
 
           if [ "${READY}" -ne 1 ]; then
-            echo "Service not responsive; saving diagnostics:"
+            echo "Service not ready; save diagnostics"
             ps auxww | egrep "AnyDesk|anydesk" || true
             tail -n 200 "${SERVICE_LOG}" || true
             cat /tmp/anydesk_err.out || true
-            # continue to attempt set-password once
           fi
 
-          # set unattended password (retries)
+          # set password (retries)
           SET_OK=0
           for j in $(seq 1 6); do
-            echo "Attempt ${j} to set password"
+            echo "set-password attempt ${j}"
             if echo "${UNATTENDED_PASSWORD}" | sudo "${AD_BIN}" --set-password >/tmp/anydesk_setpw_out 2>/tmp/anydesk_setpw_err; then
               SET_OK=1
-              echo "Set password succeeded on attempt ${j}"
+              echo "set-password ok"
               break
             fi
             sleep 2
           done
 
-          # copy logs to debug
           cp -f "${SERVICE_LOG}" "${DEBUG_DIR}/anydesk_service.log" || true
           cp -f /tmp/anydesk_id.out "${DEBUG_DIR}/anydesk_id.out" || true
           cp -f /tmp/anydesk_err.out "${DEBUG_DIR}/anydesk_err.out" || true
           cp -f /tmp/anydesk_setpw_err "${DEBUG_DIR}/anydesk_setpw_err" || true
           cp -f /tmp/anydesk_setpw_out "${DEBUG_DIR}/anydesk_setpw_out" || true
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/03_after_service_attempt.png" || true
+          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/05_after_service_and_setpw.png" || true
 
-      - name: Final screenshots & artifacts
-        run: |
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x /tmp/anydesk_final.png || true
-          sudo chown ${GUI_USER}:staff /tmp/anydesk_final.png || true
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/04_final_anydesk.png" || true
-
-      - name: Upload artifacts
+      - name: Final screenshots & upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: all-screenshots-and-logs
+          name: anydesk-debug-artifacts
           path: |
             /tmp/debug_screenshots/**
             /tmp/anydesk_final.png
@@ -211,7 +224,7 @@ jobs:
             /tmp/tcc_access_dump.txt
           if-no-files-found: ignore
 
-      - name: Keep runner alive (short)
+      - name: Keep runner alive (10 minutes)
         run: |
-          echo "Done; runner sleeps 10 minutes so you can download artifacts"
+          echo "Runner sleeping 10 minutes so you can fetch artifacts."
           sleep 600
