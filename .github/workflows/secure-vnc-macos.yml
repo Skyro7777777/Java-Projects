@@ -1,6 +1,7 @@
-name: macOS GUI RustDesk (with external script + screenshots)
+name: macOS GUI RustDesk — add to Screen Recording (best-effort)
 
-on: workflow_dispatch
+on:
+  workflow_dispatch:
 
 jobs:
   gui:
@@ -10,15 +11,14 @@ jobs:
       GUI_PASS: Apple@123
       DEBUG_DIR: /tmp/debug_screenshots
       RUSTDESK_DMG_URL: https://github.com/rustdesk/rustdesk/releases/download/1.4.6/rustdesk-1.4.6-x86_64.dmg
-      SCRIPT_URL: "https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/grant__screen_recording.py"
 
     steps:
-      - name: Prepare debug folder (writable)
+      - name: Prepare debug folder (writable by GUI user)
         run: |
           mkdir -p "${DEBUG_DIR}"
           chmod 777 "${DEBUG_DIR}"
 
-      - name: Create GUI user (vncuser)
+      - name: Create GUI user (vncuser) and chown debug dir
         run: |
           if ! id -u "${GUI_USER}" >/dev/null 2>&1; then
             sudo dscl . -create /Users/${GUI_USER}
@@ -30,18 +30,15 @@ jobs:
             sudo dscl . -passwd /Users/${GUI_USER} "${GUI_PASS}"
             sudo dscl . -append /Groups/admin GroupMembership ${GUI_USER}
             sudo createhomedir -c -u ${GUI_USER} >/dev/null 2>&1 || true
-            echo "Created user ${GUI_USER}"
-          else
-            echo "User ${GUI_USER} already exists"
           fi
           sudo chown -R ${GUI_USER}:staff "${DEBUG_DIR}"
           chmod -R 777 "${DEBUG_DIR}"
 
-      - name: Install Homebrew tools (tesseract, cliclick)
+      - name: Install tools (tesseract, cliclick — optional)
         run: |
           brew install tesseract cliclick || true
-          echo "TESSERACT: $(which tesseract || true)"
-          echo "CLICLICK: $(which cliclick || true)"
+          echo "tesseract: $(which tesseract || true)"
+          echo "cliclick: $(which cliclick || true)"
 
       - name: Download & Install RustDesk
         run: |
@@ -49,61 +46,140 @@ jobs:
           hdiutil attach /tmp/rustdesk.dmg -mountpoint /Volumes/RustDesk -nobrowse || true
           cp -R "/Volumes/RustDesk/RustDesk.app" /Applications/ || true
           hdiutil detach "/Volumes/RustDesk" || true
-          echo "RustDesk install attempted"
+          ls -l /Applications/RustDesk.app || true
 
       - name: Launch RustDesk as GUI user and capture initial screenshot
         run: |
           sudo -u ${GUI_USER} open -a /Applications/RustDesk.app || true
-          sleep 12
+          sleep 10
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/01_after_launch.png" || true
 
-      - name: Download automation script from raw URL
+      - name: Write AppleScript to add RustDesk to Screen Recording (safe file)
         run: |
-          if [ -z "${SCRIPT_URL}" ] || [ "${SCRIPT_URL}" = "YOUR_RAW_SCRIPT_URL_HERE" ]; then
-            echo "ERROR: Please set SCRIPT_URL env to the raw URL of the python script."
-            exit 1
-          fi
-          curl -fsSL "${SCRIPT_URL}" -o /tmp/grant_screen_recording.py
-          sudo chown ${GUI_USER}:staff /tmp/grant_screen_recording.py || true
-          sudo chmod +x /tmp/grant_screen_recording.py
+          cat > /tmp/add_rustdesk.scpt <<'APPLESCRIPT'
+tell application "System Settings" to activate
+delay 1
+tell application "System Events"
+  tell process "System Settings"
+    set frontmost to true
+    delay 0.6
+    -- Try to focus search field and search for "Screen Recording"
+    try
+      click (first text field of window 1)
+      delay 0.2
+      keystroke "Screen Recording"
+      delay 1
+    end try
 
-      - name: Run automation script as GUI user (best-effort)
+    -- Try to ensure the Screen & System Audio Recording pane is visible.
+    -- This UI varies across macOS versions; the search above usually reveals it.
+    delay 0.4
+
+    -- Attempt to click the "+" button in the Screen Recording list
+    try
+      -- find any button with a "+" role-like description
+      set addFound to false
+      try
+        repeat with b in (every button of window 1)
+          try
+            if (title of b is "+") or (description of b contains "add") then
+              click b
+              set addFound to true
+              exit repeat
+            end if
+          end try
+        end repeat
+      end try
+
+      -- fallback: click the first toolbar button that looks like add
+      if not addFound then
+        try
+          click (first button of window 1)
+        end try
+      end if
+    end try
+
+    delay 0.5
+
+    -- If an Open dialog appears, use Shift+Cmd+G to go to /Applications and open RustDesk.app
+    try
+      keystroke "G" using {command down, shift down}
+      delay 0.4
+      keystroke "/Applications"
+      delay 0.2
+      keystroke return
+      delay 0.6
+      -- type the app name and press Return to select it
+      keystroke "RustDesk.app"
+      delay 0.3
+      keystroke return
+      delay 0.6
+      -- click Open button if present
+      try
+        click (first button of window 1 whose title is "Open")
+      end try
+    end try
+
+    delay 1.0
+
+    -- Now try to find RustDesk entry in the main list and click the toggle to enable it.
+    try
+      repeat with w in (every window)
+        try
+          set rustTexts to (every static text of w whose value contains "RustDesk")
+          if (count of rustTexts) > 0 then
+            -- toggle the element to the right (attempt to click the nearest button/checkbox)
+            try
+              -- click the first button in the same window (best-effort)
+              click (first button of w)
+            end try
+            exit repeat
+          end if
+        end try
+      end repeat
+    end try
+
+  end tell
+end tell
+APPLESCRIPT
+          sudo chown ${GUI_USER}:staff /tmp/add_rustdesk.scpt || true
+          chmod 755 /tmp/add_rustdesk.scpt || true
+
+      - name: Run AppleScript as GUI user (attempt to add RustDesk)
         continue-on-error: true
         run: |
-          sudo -u ${GUI_USER} env PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin" \
-            python3 /tmp/grant_screen_recording.py || true
-          sleep 2
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/09_after_script.png" || true
+          sudo -u ${GUI_USER} /usr/bin/osascript /tmp/add_rustdesk.scpt || true
+          sleep 1
+          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/02_after_add_attempt.png" || true
 
-      - name: Extra attempt to click remaining dialogs (AppleScript) as GUI user
+      - name: Extra: attempt to clear any remaining popups (Allow/Open)
         run: |
-          sudo -u ${GUI_USER} env PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin" \
-            osascript -e 'tell application "System Events" to repeat 6 times
+          # Aggressively click Allow/Open buttons for any process windows (best-effort)
+          sudo -u ${GUI_USER} /usr/bin/osascript -e '
+          tell application "System Events"
+            repeat 6 times
               try
                 repeat with p in (every process)
                   try
                     repeat with w in (every window of p)
                       try
                         if exists button "Allow" of w then click button "Allow" of w
+                        if exists button "Open System Settings" of w then click button "Open System Settings" of w
                       end try
                     end repeat
                   end try
                 end repeat
               end try
-            end repeat' || true
-          sleep 1
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/10_after_extra_clicks.png" || true
+              delay 0.6
+            end repeat
+          end tell' || true
+          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/03_after_clear.png" || true
 
-      - name: Capture final RustDesk screenshot as GUI user
+      - name: Capture final RustDesk screenshot (for OCR & artifact)
         run: |
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x /tmp/rustdesk.png || true
+          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/04_final_rustdesk.png" || true
           sudo chown ${GUI_USER}:staff /tmp/rustdesk.png || true
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/11_final_rustdesk.png" || true
-
-      - name: OCR attempt (best-effort)
-        run: |
-          sudo -u ${GUI_USER} env PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
-            bash -lc 'if [ -f /tmp/rustdesk.png ]; then tesseract /tmp/rustdesk.png /tmp/rustdesk_ocr || true; echo "--- OCR TEXT ---"; cat /tmp/rustdesk_ocr.txt || true; else echo "no rustdesk.png to OCR"; fi'
 
       - name: Upload ALL screenshots artifact
         uses: actions/upload-artifact@v4
@@ -114,7 +190,7 @@ jobs:
             /tmp/rustdesk.png
           if-no-files-found: ignore
 
-      - name: Keep runner alive (manual debug window)
+      - name: Keep runner alive (short)
         run: |
-          echo "Runner will remain alive for manual debugging (6 hours). Download artifacts first."
-          for i in {1..6}; do echo "sleeping $i"; sleep 3600; done
+          echo "Finished. Runner will sleep 10 minutes so you can fetch artifacts if needed."
+          sleep 600
