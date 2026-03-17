@@ -11,7 +11,7 @@ jobs:
       GUI_PASS: Apple@123
       DEBUG_DIR: /tmp/debug_screenshots
       ANYDESK_DMG_URL: https://download.anydesk.com/anydesk.dmg
-      APPLESCRIPT_URL: "PUT_RAW_URL_HERE"
+      APPLESCRIPT_URL: "https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/clear_popups.applescript"
       UNATTENDED_PASSWORD: Apple@123
 
     steps:
