@@ -1,4 +1,4 @@
-name: macOS GUI RustDesk (with external script + screenshots)
+name: macOS GUI RustDesk – Grant Screen Recording (direct method)
 
 on: workflow_dispatch
 
@@ -37,13 +37,13 @@ jobs:
           sudo chown -R ${GUI_USER}:staff "${DEBUG_DIR}"
           chmod -R 777 "${DEBUG_DIR}"
 
-      - name: Install Homebrew tools (tesseract, cliclick)
+      - name: Install Homebrew tools
         run: |
           brew install tesseract cliclick || true
           echo "TESSERACT: $(which tesseract || true)"
           echo "CLICLICK: $(which cliclick || true)"
 
-      - name: Download & Install RustDesk
+      - name: Download and install RustDesk
         run: |
           curl -L -o /tmp/rustdesk.dmg "${RUSTDESK_DMG_URL}"
           hdiutil attach /tmp/rustdesk.dmg -mountpoint /Volumes/RustDesk -nobrowse || true
@@ -51,76 +51,65 @@ jobs:
           hdiutil detach "/Volumes/RustDesk" || true
           echo "RustDesk install attempted"
 
-      - name: Reset TCC + Relaunch RustDesk (helps with broken Configure button)
+      - name: Reset TCC permissions + initial launch
         run: |
           sudo -u ${GUI_USER} tccutil reset ScreenCapture com.carriez.RustDesk || true
           sudo -u ${GUI_USER} tccutil reset Accessibility com.carriez.RustDesk || true
-          sudo -u ${GUI_USER} killall RustDesk || true
-          sleep 4
           sudo -u ${GUI_USER} open -a /Applications/RustDesk.app || true
           sleep 15
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/01_after_relaunch.png" || true
+          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/01_after_initial_launch.png" || true
 
-      - name: Download automation script from raw URL
+      - name: Download automation script
         run: |
-          if [ -z "${SCRIPT_URL}" ] || [ "${SCRIPT_URL}" = "YOUR_RAW_SCRIPT_URL_HERE" ]; then
-            echo "ERROR: Please set SCRIPT_URL env to the raw URL of the python script."
-            exit 1
-          fi
           curl -fsSL "${SCRIPT_URL}" -o /tmp/grant_screen_recording.py
           sudo chown ${GUI_USER}:staff /tmp/grant_screen_recording.py || true
           sudo chmod +x /tmp/grant_screen_recording.py
 
-      - name: Run automation script as GUI user
+      - name: Run Python automation script
         continue-on-error: true
         run: |
           sudo -u ${GUI_USER} env PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin" \
             python3 /tmp/grant_screen_recording.py || true
-          sleep 8
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/09_after_script.png" || true
+          sleep 10
+          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/09_after_automation.png" || true
 
-      - name: Extra attempt to click remaining dialogs (AppleScript)
+      - name: Extra background "Allow" dialog clicks
         run: |
-          sudo -u ${GUI_USER} env PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin" \
-            osascript -e 'tell application "System Events" to repeat 10 times
-              try
-                repeat with p in (every process)
+          sudo -u ${GUI_USER} osascript -e 'tell application "System Events" to repeat 12 times
+            try
+              repeat with p in (every process)
+                repeat with w in (every window of p)
                   try
-                    repeat with w in (every window of p)
-                      try
-                        if exists button "Allow" of w then click button "Allow" of w
-                        delay 0.4
-                      end try
-                    end repeat
+                    if exists button "Allow" of w then click button "Allow" of w
                   end try
                 end repeat
-              end try
-              delay 0.6
-            end repeat' || true
-          sleep 3
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/10_after_extra_clicks.png" || true
+              end repeat
+            end try
+            delay 0.5
+          end repeat' || true
+          sleep 4
+          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/10_after_allow_clicks.png" || true
 
-      - name: Capture final RustDesk screenshot
+      - name: Capture final screenshots + attempt OCR on RustDesk ID
         run: |
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x /tmp/rustdesk.png || true
-          sudo chown ${GUI_USER}:staff /tmp/rustdesk.png || true
+          sudo -u ${GUI_USER} /usr/sbin/screencapture -x /tmp/final_rustdesk.png || true
+          sudo chown ${GUI_USER}:staff /tmp/final_rustdesk.png || true
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/11_final_rustdesk.png" || true
-
-      - name: OCR attempt (best-effort)
-        run: |
           sudo -u ${GUI_USER} env PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
-            bash -lc 'if [ -f /tmp/rustdesk.png ]; then tesseract /tmp/rustdesk.png /tmp/rustdesk_ocr --psm 6 || true; echo "--- OCR TEXT ---"; cat /tmp/rustdesk_ocr.txt || true; else echo "no rustdesk.png to OCR"; fi'
+            tesseract /tmp/final_rustdesk.png /tmp/ocr_result --psm 6 || true
+          echo "--- FINAL OCR OUTPUT (ID should be visible) ---"
+          cat /tmp/ocr_result.txt || echo "OCR failed or no text found"
 
-      - name: Upload ALL screenshots artifact
+      - name: Upload all debug screenshots
         uses: actions/upload-artifact@v4
         with:
-          name: all-screenshots
+          name: debug-screenshots
           path: |
             /tmp/debug_screenshots/**
-            /tmp/rustdesk.png
+            /tmp/final_rustdesk.png
           if-no-files-found: ignore
 
-      - name: Keep runner alive (manual debug window)
+      - name: Keep runner alive for manual inspection
         run: |
-          echo "Runner will remain alive for manual debugging (6 hours). Download artifacts first."
-          for i in {1..6}; do echo "sleeping $i"; sleep 3600; done
+          echo "Runner will sleep for 6 hours. Download artifacts first!"
+          for i in {1..6}; do echo "Sleeping hour $i/6"; sleep 3600; done
