@@ -1,42 +1,113 @@
-- name: Run automation script (permissions + add to both panes)
-  run: |
-    curl -fsSL "${SCRIPT_URL}" -o /tmp/grant_screen_recording.py
-    sudo chown ${GUI_USER}:staff /tmp/grant_screen_recording.py
-    sudo chmod +x /tmp/grant_screen_recording.py
-    sudo -u ${GUI_USER} env PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin" \
-      python3 /tmp/grant_screen_recording.py || true
-    sleep 15
-    sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/09_after_script.png" || true
+name: macOS GUI AnyDesk – Full Automation
+on: workflow_dispatch
 
-- name: Upload automation log
-  if: always()
-  uses: actions/upload-artifact@v4
-  with:
-    name: automation-log
-    path: /tmp/anydesk_automation.log
-    if-no-files-found: ignore
+jobs:
+  gui:
+    runs-on: macos-latest
+    env:
+      GUI_USER: vncuser
+      GUI_PASS: Apple@123
+      DEBUG_DIR: /tmp/debug_screenshots
+      ANYDESK_DMG_URL: "https://download.anydesk.com/anydesk.dmg"
+      SCRIPT_URL: "https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/grant__screen_recording.py"
+      UNATTENDED_PASSWORD: "Apple@123"
 
-# (Optional) You can remove the separate "Enable Unattended Access" step,
-# as it's now handled in the script. But if you keep it, run it as user:
-- name: Enable Unattended Access (password Apple@123)
-  run: |
-    sudo -u ${GUI_USER} open -a "/Applications/AnyDesk.app" || true
-    sleep 20
-    sudo -u ${GUI_USER} bash -c 'echo "${UNATTENDED_PASSWORD}" | /Applications/AnyDesk.app/Contents/MacOS/AnyDesk --set-password' || true
-    echo "Unattended password set to: ${UNATTENDED_PASSWORD}"
-    sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/12_unattended_enabled.png" || true
+    steps:
+      - name: Prepare debug folder (writable)
+        run: |
+          mkdir -p "${DEBUG_DIR}"
+          chmod 777 "${DEBUG_DIR}"
 
-- name: Final cleanup + screenshot
-  run: |
-    sudo -u ${GUI_USER} /usr/sbin/screencapture -x /tmp/anydesk_final.png || true
-    sudo chown ${GUI_USER}:staff /tmp/anydesk_final.png || true
-    sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/11_final_anydesk.png" || true
+      - name: Create GUI user (vncuser)
+        run: |
+          if ! id -u "${GUI_USER}" >/dev/null 2>&1; then
+            sudo dscl . -create /Users/${GUI_USER}
+            sudo dscl . -create /Users/${GUI_USER} UserShell /bin/bash
+            sudo dscl . -create /Users/${GUI_USER} RealName "VNC User"
+            sudo dscl . -create /Users/${GUI_USER} UniqueID "510"
+            sudo dscl . -create /Users/${GUI_USER} PrimaryGroupID 20
+            sudo dscl . -create /Users/${GUI_USER} NFSHomeDirectory /Users/${GUI_USER}
+            sudo dscl . -passwd /Users/${GUI_USER} "${GUI_PASS}"
+            sudo dscl . -append /Groups/admin GroupMembership ${GUI_USER}
+            sudo createhomedir -c -u ${GUI_USER} >/dev/null 2>&1 || true
+            echo "Created user ${GUI_USER}"
+          else
+            echo "User ${GUI_USER} already exists"
+          fi
+          sudo chown -R ${GUI_USER}:staff "${DEBUG_DIR}"
+          chmod -R 777 "${DEBUG_DIR}"
 
-- name: Upload artifacts
-  uses: actions/upload-artifact@v4
-  with:
-    name: all-screenshots
-    path: |
-      /tmp/debug_screenshots/**
-      /tmp/anydesk_final.png
-    if-no-files-found: ignore
+      - name: Install Homebrew tools (tesseract, cliclick)
+        run: |
+          brew install tesseract cliclick || true
+          echo "TESSERACT: $(which tesseract || true)"
+          echo "CLICLICK: $(which cliclick || true)"
+
+      - name: Download & Install AnyDesk (portable DMG)
+        run: |
+          curl -L -o /tmp/anydesk.dmg "${ANYDESK_DMG_URL}"
+          hdiutil attach /tmp/anydesk.dmg -mountpoint /Volumes/AnyDesk -nobrowse || true
+          cp -R "/Volumes/AnyDesk/AnyDesk.app" /Applications/ || true
+          hdiutil detach "/Volumes/AnyDesk" || true
+          echo "AnyDesk installed to /Applications"
+
+      - name: Launch AnyDesk and capture initial screenshot
+        run: |
+          sudo -u ${GUI_USER} open -a "/Applications/AnyDesk.app" || true
+          sleep 20
+          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/01_after_launch.png" || true
+
+      - name: Download automation script from raw URL
+        run: |
+          if [ -z "${SCRIPT_URL}" ] || [ "${SCRIPT_URL}" = "YOUR_RAW_SCRIPT_URL_HERE" ]; then
+            echo "ERROR: Please set SCRIPT_URL env to the raw URL of the python script."
+            exit 1
+          fi
+          curl -fsSL "${SCRIPT_URL}" -o /tmp/grant_screen_recording.py
+          sudo chown ${GUI_USER}:staff /tmp/grant_screen_recording.py
+          sudo chmod +x /tmp/grant_screen_recording.py
+          echo "✅ Script downloaded"
+
+      - name: Run automation script (grants permissions + sets password)
+        continue-on-error: true
+        run: |
+          sudo -u ${GUI_USER} env PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin" \
+            python3 /tmp/grant_screen_recording.py
+          sleep 5
+          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/09_after_script.png" || true
+
+      - name: Upload automation log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: automation-log
+          path: /tmp/anydesk_automation.log
+          if-no-files-found: ignore
+
+      - name: Final screenshot (main AnyDesk window)
+        run: |
+          sudo -u ${GUI_USER} /usr/sbin/screencapture -x /tmp/anydesk_final.png || true
+          sudo chown ${GUI_USER}:staff /tmp/anydesk_final.png || true
+          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/11_final_anydesk.png" || true
+
+      - name: Upload ALL debug screenshots and final image
+        uses: actions/upload-artifact@v4
+        with:
+          name: all-screenshots
+          path: |
+            /tmp/debug_screenshots/**
+            /tmp/anydesk_final.png
+          if-no-files-found: ignore
+
+      - name: Keep runner alive for manual connection (6 hours)
+        run: |
+          echo "========================================================="
+          echo "✅ ANYDESK AUTOMATION COMPLETED"
+          echo "========================================================="
+          echo "The final screenshot (11_final_anydesk.png) should show the AnyDesk ID."
+          echo "Connect using that ID and password: ${UNATTENDED_PASSWORD}"
+          echo ""
+          echo "Debug screenshots and log are uploaded as artifacts."
+          echo "Runner will stay alive for 6 hours. Download artifacts before it ends."
+          echo "========================================================="
+          for i in {1..6}; do echo "Sleeping hour $i..."; sleep 3600; done
