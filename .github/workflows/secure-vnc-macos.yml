@@ -1,180 +1,83 @@
-name: macOS GUI — run external scripts + dump RustDesk UI
+name: macOS RustDesk Debug (clean)
 
 on:
   workflow_dispatch:
 
 jobs:
-  gui:
+  run:
     runs-on: macos-latest
+
     env:
       GUI_USER: vncuser
       GUI_PASS: Apple@123
       DEBUG_DIR: /tmp/debug_screenshots
-      RUSTDESK_DMG_URL: https://github.com/rustdesk/rustdesk/releases/download/1.4.6/rustdesk-1.4.6-x86_64.dmg
-      PY_SCRIPT_URL: "https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/grant__screen_recording.py"
-      DUMP_SCPT_URL: "https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/dump_rustdesk_ui.scpt"
+      PY_SCRIPT_URL: https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/grant__screen_recording.py
+      DUMP_SCPT_URL: https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/dump_rustdesk_ui.scpt
 
     steps:
-      - name: Prepare debug folder (writable)
+      - name: Prepare debug folder
         run: |
-          mkdir -p "${DEBUG_DIR}"
-          chmod 777 "${DEBUG_DIR}"
-          ls -ld "${DEBUG_DIR}"
+          mkdir -p "$DEBUG_DIR"
+          chmod 777 "$DEBUG_DIR"
 
-      - name: Create GUI user (vncuser) and chown debug dir
+      - name: Create GUI user
         run: |
-          if ! id -u "${GUI_USER}" >/dev/null 2>&1; then
-            sudo dscl . -create /Users/${GUI_USER}
-            sudo dscl . -create /Users/${GUI_USER} UserShell /bin/bash
-            sudo dscl . -create /Users/${GUI_USER} RealName "VNC User"
-            sudo dscl . -create /Users/${GUI_USER} UniqueID "510"
-            sudo dscl . -create /Users/${GUI_USER} PrimaryGroupID 20
-            sudo dscl . -create /Users/${GUI_USER} NFSHomeDirectory /Users/${GUI_USER}
-            sudo dscl . -passwd /Users/${GUI_USER} "${GUI_PASS}"
-            sudo dscl . -append /Groups/admin GroupMembership ${GUI_USER}
-            sudo createhomedir -c -u ${GUI_USER} >/dev/null 2>&1 || true
-            echo "Created user ${GUI_USER}"
-          else
-            echo "User ${GUI_USER} already exists"
+          if ! id -u "$GUI_USER" >/dev/null 2>&1; then
+            sudo sysadminctl -addUser "$GUI_USER" -password "$GUI_PASS" || true
           fi
-          sudo chown -R ${GUI_USER}:staff "${DEBUG_DIR}"
-          chmod -R 777 "${DEBUG_DIR}"
-          ls -ld "${DEBUG_DIR}"
+          sudo chown -R "$GUI_USER":staff "$DEBUG_DIR"
 
-      - name: (Optional) Install dependencies
+      - name: Install tools
         run: |
-          # tesseract & cliclick used by scripts (if missing)
-          brew install tesseract cliclick || true
-          echo "tesseract=$(which tesseract || true)"
-          echo "cliclick=$(which cliclick || true)"
+          brew install cliclick tesseract || true
 
-      - name: Download & Install RustDesk
+      - name: Install RustDesk
         run: |
-          curl -L -o /tmp/rustdesk.dmg "${RUSTDESK_DMG_URL}"
-          hdiutil attach /tmp/rustdesk.dmg -mountpoint /Volumes/RustDesk -nobrowse || true
-          cp -R "/Volumes/RustDesk/RustDesk.app" /Applications/ || true
-          hdiutil detach "/Volumes/RustDesk" || true
-          ls -ld /Applications/RustDesk.app || true
+          curl -L -o /tmp/rustdesk.dmg https://github.com/rustdesk/rustdesk/releases/download/1.4.6/rustdesk-1.4.6-x86_64.dmg
+          hdiutil attach /tmp/rustdesk.dmg -mountpoint /Volumes/RustDesk || true
+          cp -R "/Volumes/RustDesk/RustDesk.app" /Applications/
+          hdiutil detach /Volumes/RustDesk || true
 
-      - name: Launch RustDesk (GUI user) and screenshot
+      - name: Launch RustDesk
         run: |
-          sudo -u ${GUI_USER} open -a /Applications/RustDesk.app || true
-          # wait for it to initialize and for initial popups
+          sudo -u "$GUI_USER" open -a /Applications/RustDesk.app
           sleep 12
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/01_after_launch.png" || true
+          sudo -u "$GUI_USER" screencapture -x "$DEBUG_DIR/01_launch.png" || true
 
-      - name: Download external Python automation (no inline Python)
+      - name: Download Python script
         run: |
-          if [ -z "${PY_SCRIPT_URL}" ]; then
-            echo "PY_SCRIPT_URL is empty"
-            exit 1
-          fi
-          curl -fsSL "${PY_SCRIPT_URL}" -o /tmp/grant__screen_recording.py
-          sudo chown ${GUI_USER}:staff /tmp/grant__screen_recording.py || true
-          chmod +x /tmp/grant__screen_recording.py
-          echo "Saved /tmp/grant__screen_recording.py (size: $(stat -f%z /tmp/grant__screen_recording.py))"
+          curl -L "$PY_SCRIPT_URL" -o /tmp/grant.py
+          chmod +x /tmp/grant.py
+          sudo chown "$GUI_USER":staff /tmp/grant.py
 
-      - name: Run external Python automation as GUI user
+      - name: Run Python automation
         continue-on-error: true
         run: |
-          sudo -u ${GUI_USER} env PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin" \
-            python3 /tmp/grant__screen_recording.py || true
+          sudo -u "$GUI_USER" env PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+            python3 /tmp/grant.py || true
+
           sleep 2
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/09_after_python.png" || true
-          ls -lh "${DEBUG_DIR}" || true
+          sudo -u "$GUI_USER" screencapture -x "$DEBUG_DIR/02_after_python.png" || true
 
-      - name: Download dump_rustdesk_ui.scpt (AppleScript diagnostic)
+      - name: Download AppleScript (external only)
         run: |
-          if [ -z "${DUMP_SCPT_URL}" ]; then
-            echo "DUMP_SCPT_URL is empty"
-            exit 1
-          fi
-          curl -fsSL "${DUMP_SCPT_URL}" -o /tmp/dump_rustdesk_ui.scpt
-          sudo chown ${GUI_USER}:staff /tmp/dump_rustdesk_ui.scpt || true
-          chmod 755 /tmp/dump_rustdesk_ui.scpt
-          echo "Saved /tmp/dump_rustdesk_ui.scpt (size: $(stat -f%z /tmp/dump_rustdesk_ui.scpt))"
-          echo "Contents (first 200 chars):"
-          head -c 200 /tmp/dump_rustdesk_ui.scpt || true
+          curl -L "$DUMP_SCPT_URL" -o /tmp/dump.scpt
+          chmod +x /tmp/dump.scpt
+          sudo chown "$GUI_USER":staff /tmp/dump.scpt
 
-      - name: Run AppleScript diagnostic as GUI user (produce /tmp/rustdesk_ui.txt)
+      - name: Run AppleScript dump
         continue-on-error: true
         run: |
-          # Run as GUI user so accessibility events are from the desktop session
-          sudo -u ${GUI_USER} /usr/bin/osascript /tmp/dump_rustdesk_ui.scpt || true
-          sleep 0.8
-          # screenshot after diagnostic run to capture UI state
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/10_after_dump_ui.png" || true
-          echo "----- rustdesk_ui.txt -----"
-          if [ -f /tmp/rustdesk_ui.txt ]; then
-            sudo -u ${GUI_USER} /bin/cat /tmp/rustdesk_ui.txt || true
-          else
-            echo "/tmp/rustdesk_ui.txt not found"
-          fi
+          sudo -u "$GUI_USER" osascript /tmp/dump.scpt || true
+          sleep 1
+          sudo -u "$GUI_USER" screencapture -x "$DEBUG_DIR/03_after_dump.png" || true
 
-      - name: Extra: attempt to click Configure with helper (best-effort)
+      - name: Final capture
         run: |
-          # we provide a short AppleScript to click "Configure" within RustDesk if present
-          cat > /tmp/click_config.scpt <<'APPL'
-tell application "System Events"
-  if exists process "RustDesk" then
-    tell process "RustDesk"
-      set frontmost to true
-      delay 0.5
-      repeat with w in (every window)
-        try
-          -- try to find static texts that include "Configure" (case-insensitive)
-          repeat with t in (every static text of w)
-            try
-              if (value of t as string) contains "Configure" then
-                set pos to position of t
-                set sz to size of t
-                set cx to (item 1 of pos) + (item 1 of sz) / 2
-                set cy to (item 2 of pos) + (item 2 of sz) / 2
-                click at {cx, cy}
-                delay 0.6
-                return
-              end if
-            end try
-          end repeat
-        end try
-      end repeat
-    end tell
-  end if
-end tell
-APPL
-          sudo chown ${GUI_USER}:staff /tmp/click_config.scpt || true
-          chmod 755 /tmp/click_config.scpt || true
-          sudo -u ${GUI_USER} /usr/bin/osascript /tmp/click_config.scpt || true
-          sleep 0.8
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/11_after_click_config.png" || true
+          sudo -u "$GUI_USER" screencapture -x /tmp/rustdesk.png || true
+          sudo -u "$GUI_USER" screencapture -x "$DEBUG_DIR/04_final.png" || true
 
-      - name: Fallback coordinate clicks (best-effort)
-        run: |
-          sudo -u ${GUI_USER} bash -lc '
-            set -e
-            COORDS=("960,780" "1000,760" "1000,420" "1100,420" "900,420")
-            for c in "${COORDS[@]}"; do
-              IFS="," read x y <<< "$c"
-              if [ -x /usr/local/bin/cliclick ]; then
-                /usr/local/bin/cliclick c:"$x,$y" || true
-              elif [ -x /opt/homebrew/bin/cliclick ]; then
-                /opt/homebrew/bin/cliclick c:"$x,$y" || true
-              else
-                /usr/bin/osascript -e "tell application \"System Events\" to click at {$x, $y}" || true
-              fi
-              sleep 0.6
-              /usr/sbin/screencapture -x "${DEBUG_DIR}/12_fallback_${x}_${y}.png" || true
-            done
-          '
-
-      - name: Capture final RustDesk image
-        run: |
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x /tmp/rustdesk.png || true
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/13_final_rustdesk.png" || true
-          sudo chown ${GUI_USER}:staff /tmp/rustdesk.png || true
-          ls -lh "${DEBUG_DIR}" || true
-
-      - name: Upload ALL screenshots + rustdesk_ui.txt artifact
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: all-screenshots
@@ -183,8 +86,3 @@ APPL
             /tmp/rustdesk.png
             /tmp/rustdesk_ui.txt
           if-no-files-found: ignore
-
-      - name: Short keep-alive (10 minutes)
-        run: |
-          echo "Finished. Sleep for 10 minutes to let you download artifacts."
-          sleep 600
