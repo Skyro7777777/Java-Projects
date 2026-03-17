@@ -23,49 +23,64 @@ def cliclick(x, y):
     subprocess.run([CLICLICK, f"c:{x},{y}"], timeout=8, check=False)
     log(f"Clicked ({x},{y})")
 
-log("=== AnyDesk Screen Recording Automation ===")
+log("=== AnyDesk Permissions Automation (exact screenshot flow) ===")
 shot("00_start.png")
 
-# Trigger initial permission
-subprocess.run(["/usr/sbin/screencapture", "-x", "/tmp/dummy.png"])
-time.sleep(4)
-shot("01_after_trigger.png")
-
-# Activate AnyDesk
+# Activate the permissions status window
 applescript('tell application "AnyDesk" to activate')
-time.sleep(4)
+time.sleep(3)
+shot("01_status_window.png")
 
-# Click the permission request button (standard title on AnyDesk macOS)
-log("Clicking permission request button...")
+# Click the two required buttons from your screenshot
+log("Clicking 'Open Screen Recording preferences'...")
 applescript('''
     tell application "System Events"
         tell process "AnyDesk"
-            try
-                click (first button of window 1 whose title contains "Open Screen Recording" or title contains "Grant" or title contains "Request")
-            end try
+            click (first button of window 1 whose title contains "Open Screen Recording preferences")
         end tell
     end tell
 ''')
 time.sleep(6)
-shot("02_after_permission_click.png")
+shot("02_screen_recording_opened.png")
 
-# Click "Open System Preferences" / "Open System Settings" in the dialog
-log("Opening System Settings from dialog...")
+log("Clicking 'Request Accessibility'...")
 applescript('''
     tell application "System Events"
-        click (first button of window 1 whose title contains "Open System" or title contains "Preferences" or title contains "Settings")
+        click (first button of window 1 whose title contains "Request Accessibility")
     end tell
 ''')
-time.sleep(8)
-shot("03_settings_opened.png")
+time.sleep(6)
+shot("03_accessibility_requested.png")
 
-# Toggle AnyDesk in Screen Recording pane
-log("Toggling AnyDesk switch...")
-cliclick(1480, 420)   # reliable position on GitHub runner
+# Now in System Settings pane → add AnyDesk via + button
+log("Adding AnyDesk via + button...")
+applescript('''
+    tell application "System Events"
+        tell process "System Settings"
+            click button "+" of scroll area 1 of group 1 of window 1
+        end tell
+    end tell
+''')
 time.sleep(4)
-shot("04_after_toggle.png")
 
-# Password prompt if it appears
+applescript('''
+    tell application "System Events"
+        keystroke "/Applications/AnyDesk.app"
+        delay 1.5
+        key code 36
+        delay 2
+        key code 36
+    end tell
+''')
+time.sleep(6)
+shot("04_after_add.png")
+
+# Toggle the switch (right side of the list)
+cliclick(1480, 420)
+time.sleep(4)
+shot("05_after_toggle.png")
+
+# Password prompt
 applescript('''
     tell application "System Events"
         if exists (button "Modify Settings") then
@@ -76,12 +91,13 @@ applescript('''
     end tell
 ''')
 time.sleep(4)
+shot("06_after_password.png")
 
-# Quit & reopen AnyDesk so permission takes effect
+# Quit & reopen so main ID window appears (connection info visible)
 applescript('tell application "AnyDesk" to quit')
 time.sleep(6)
 applescript('tell application "AnyDesk" to activate')
 time.sleep(12)
-shot("07_final.png")
+shot("07_final_anydesk.png")
 
-log("=== Done — check 07_final.png for AnyDesk ID ===")
+log("=== Automation finished — ID should now be visible in 07_final_anydesk.png ===")
