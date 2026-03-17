@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-# Best-effort UI automation: click Allow/Open System Settings, open System Settings,
-# search for "RustDesk", try to toggle switch, and save debug screenshots.
-import subprocess, time, pathlib
+# Complete automation: clear popups, click RustDesk "Configure", grant permission, and capture final screenshot.
+import subprocess, time, pathlib, sys, re
 
 DEBUG = pathlib.Path("/tmp/debug_screenshots")
 DEBUG.mkdir(parents=True, exist_ok=True)
+TESSERACT = "/opt/homebrew/bin/tesseract"   # adjust if needed
+CLICLICK = "/opt/homebrew/bin/cliclick"
 
 def shot(name):
     path = DEBUG / name
@@ -19,71 +20,123 @@ def applescript(script):
     except Exception as e:
         print("osascript error:", e)
 
-# 0) initial
-shot("02_start.png")
-
-# 1) aggressively click standard dialog buttons ("Allow", "Open System Settings", "Open System Preferences")
-for i in range(12):
-    script = '''
-    tell application "System Events"
-      repeat with p in (every process)
-        try
-          repeat with w in (every window of p)
-            try
-              repeat with b in {"Allow","Open System Settings","Open System Preferences"}
-                try
-                  if exists button b of w then
-                    click button b of w
-                    delay 0.6
-                  end if
-                end try
-              end repeat
-            end try
-          end repeat
-        end try
-      end repeat
-    end tell
-    '''
-    applescript(script)
-    shot(f"03_clear_{i}.png")
-    time.sleep(0.7)
-
-# 2) open System Settings (macOS 13+/14+)
-applescript('tell application "System Settings" to activate')
-time.sleep(2)
-shot("04_settings_opened.png")
-
-# 3) attempt to search RustDesk (send keystrokes)
-applescript('tell application "System Events" to keystroke "RustDesk"')
-time.sleep(2)
-shot("05_search_typed.png")
-
-# 4) try cliclick coordinate fallback positions (common area for toggles)
-cands = [(1000,360),(1100,420),(1200,480),(900,420)]
-for x,y in cands:
-    # prefer installed cliclick binary
+def cliclick(x, y):
     try:
-        subprocess.run(["/usr/local/bin/cliclick", f"c:{x},{y}"], check=False)
-    except Exception:
-        try:
-            subprocess.run(["/opt/homebrew/bin/cliclick", f"c:{x},{y}"], check=False)
-        except Exception:
-            # apple-script coordinate click fallback
-            applescript(f'tell application "System Events" to click at {{{x},{y}}}')
-    time.sleep(0.6)
-    shot(f"06_click_{x}_{y}.png")
+        subprocess.run([CLICLICK, f"c:{x},{y}"], check=False)
+    except:
+        applescript(f'tell application "System Events" to click at {{{x},{y}}}')
 
-# 5) another pass to clear any remaining dialogs
-for i in range(6):
-    applescript(script)
-    shot(f"07_posttoggle_{i}.png")
-    time.sleep(0.7)
+def ocr_find_text(target, timeout=30):
+    """Return (x,y) center of first screen region containing target text, or None."""
+    start = time.time()
+    while time.time() - start < timeout:
+        tmp = DEBUG / "ocr_tmp.png"
+        subprocess.run(["/usr/sbin/screencapture", "-x", str(tmp)], check=False)
+        # run tesseract with bounding boxes
+        base = tmp.with_suffix('')
+        subprocess.run([TESSERACT, str(tmp), str(base), "tsv"], check=False, capture_output=True)
+        tsv = base.with_suffix('.tsv')
+        if tsv.exists():
+            with open(tsv) as f:
+                lines = f.readlines()
+            tsv.unlink()
+            for line in lines[1:]:
+                parts = line.strip().split('\t')
+                if len(parts) >= 12 and parts[11] and int(parts[10]) > 50:
+                    text = parts[11].lower()
+                    if target.lower() in text:
+                        x = int(parts[6]) + int(parts[8])//2
+                        y = int(parts[7]) + int(parts[9])//2
+                        return (x, y)
+        tmp.unlink()
+        time.sleep(1)
+    return None
 
-# 6) final screenshots
-shot("08_final_system.png")
-# take /tmp/rustdesk.png for OCR later
-try:
-    subprocess.run(["/usr/sbin/screencapture","-x","/tmp/rustdesk.png"], check=False)
-except Exception as e:
-    print("final screencapture failed:", e)
-print("Automation script done")
+# ----- START -----
+shot("01_before_script.png")
+print("Step 0: Aggressively clear any bash dialogs")
+for i in range(8):
+    applescript('''
+    tell application "System Events"
+        repeat with p in (every process)
+            try
+                repeat with w in (every window of p)
+                    try
+                        if exists button "Allow" of w then click button "Allow" of w
+                    end try
+                end repeat
+            end try
+        end repeat
+    end tell
+    ''')
+    time.sleep(0.5)
+shot("02_after_clear.png")
+
+print("Step 1: Look for RustDesk 'Configure' button")
+# First try OCR
+pos = ocr_find_text("Configure", timeout=10)
+if pos:
+    print(f"Found 'Configure' at {pos}, clicking")
+    cliclick(*pos)
+else:
+    print("OCR failed, using fallback coordinate (bottom center)")
+    cliclick(960, 810)   # 1920x1080 screen, bottom center
+time.sleep(3)
+shot("03_after_configure_click.png")
+
+print("Step 2: Click 'Open System Settings' in the permission dialog")
+pos = ocr_find_text("Open System Settings", timeout=10)
+if pos:
+    cliclick(*pos)
+else:
+    print("Fallback: click left-center of screen")
+    cliclick(760, 540)
+time.sleep(5)
+shot("04_after_open_settings.png")
+
+print("Step 3: In System Settings, find and toggle RustDesk")
+# Wait for RustDesk to appear in list (might take a few seconds)
+pos = ocr_find_text("RustDesk", timeout=20)
+if pos:
+    # Click the toggle to the right of the text
+    toggle_x = pos[0] + 200
+    toggle_y = pos[1]
+    cliclick(toggle_x, toggle_y)
+    print(f"Clicked toggle at ({toggle_x}, {toggle_y})")
+else:
+    print("RustDesk not found, trying known toggle location (right side)")
+    cliclick(1500, 400)   # approximate
+time.sleep(2)
+shot("05_after_toggle.png")
+
+print("Step 4: Handle password prompt if it appears")
+pos = ocr_find_text("Enter your password", timeout=5)
+if pos:
+    print("Password prompt detected")
+    applescript(f'''
+    tell application "System Events"
+        keystroke "Apple@123"
+        delay 1
+        key code 36   -- return
+    end tell
+    ''')
+    time.sleep(2)
+    # Click "Modify Settings" if present
+    pos2 = ocr_find_text("Modify Settings", timeout=3)
+    if pos2:
+        cliclick(*pos2)
+shot("06_after_password.png")
+
+print("Step 5: Handle 'Quit & Reopen' dialog")
+pos = ocr_find_text("Quit", timeout=5)
+if pos:
+    cliclick(*pos)
+    print("RustDesk quitting, waiting for restart...")
+    time.sleep(8)
+shot("07_after_quit.png")
+
+print("Step 6: Final screenshot for OCR")
+time.sleep(5)
+subprocess.run(["/usr/sbin/screencapture", "-x", "/tmp/rustdesk.png"], check=False)
+shot("08_final.png")
+print("Automation script completed.")
