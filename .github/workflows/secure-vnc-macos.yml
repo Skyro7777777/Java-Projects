@@ -1,4 +1,4 @@
-name: Safari -> Google sign-in -> OCR 2FA -> open Chrome Remote Desktop
+name: Safari -> Google sign-in -> OCR 2FA -> open Chrome Remote Desktop (v2)
 
 on:
   workflow_dispatch:
@@ -12,7 +12,9 @@ jobs:
       DEBUG_DIR: /tmp/debug_screenshots
       CRD_URL: "https://remotedesktop.google.com/access"
       GOOGLE_SIGNIN_URL: "https://accounts.google.com/signin/v2/identifier"
-      # Paste only raw AppleScript if you want extra popup clear logic; not required here.
+      # how long to keep polling/waiting (seconds) for the 2FA approval numbers
+      POLL_SECONDS: "180"
+      POLL_INTERVAL: "5"
 
     steps:
       - name: Prepare debug folder
@@ -32,109 +34,128 @@ jobs:
             sudo dscl . -passwd /Users/${GUI_USER} "${GUI_PASS}"
             sudo dscl . -append /Groups/admin GroupMembership ${GUI_USER}
             sudo createhomedir -c -u ${GUI_USER} >/dev/null 2>&1 || true
-          else
-            echo "User exists"
           fi
           sudo chown -R ${GUI_USER}:staff "${DEBUG_DIR}" || true
           chmod -R 777 "${DEBUG_DIR}" || true
 
-      - name: Install tesseract (OCR) and cliclick (optional)
+      - name: Install OCR & helpers
         run: |
           brew install tesseract cliclick || true
-          echo "TESSERACT=$(which tesseract)"
+          echo "TESSERACT: $(which tesseract || true)"
+          echo "CLICLICK: $(which cliclick || true)"
 
-      - name: Launch Safari and navigate to Google sign-in
+      - name: Launch Safari and open Google signin
         run: |
-          # make sure Safari is frontmost and open signin URL
           sudo -u ${GUI_USER} /usr/bin/osascript -e 'tell application "Safari" to activate'
           sudo -u ${GUI_USER} /usr/bin/osascript -e 'tell application "Safari" to open location "'"${GOOGLE_SIGNIN_URL}"'"'
           sleep 3
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/01_safari_open.png" || true
 
-      - name: Fill email and press Next (AppleScript typing)
+      - name: Inject email (JS) and click Next
         env:
           EMAIL: ${{ secrets.GOOGLE_EMAIL }}
         run: |
-          # Type email and press Return using System Events (as GUI user).
-          # We use osascript and shell substitution to insert the secret email.
-          sudo -u ${GUI_USER} /usr/bin/osascript <<'APPLESCRIPT'
-          tell application "System Events"
-            -- make sure Safari is frontmost
-            tell application "Safari" to activate
-            delay 0.5
-            -- Focus the window
-            try
-              keystroke tab
-            end try
-            delay 0.5
-          end tell
-          APPLESCRIPT
-          # Now type the email via osascript with the secret inserted (keystroke can't receive env from heredoc above)
-          # Use a separate osascript call that the shell expands (this will not echo the secret to logs).
-          sudo -u ${GUI_USER} /usr/bin/osascript -e 'tell application "System Events" to keystroke "'"${{ secrets.GOOGLE_EMAIL }}"'"' || true
-          sleep 0.3
-          sudo -u ${GUI_USER} /usr/bin/osascript -e 'tell application "System Events" to key code 36' || true
+          # Use Safari's "do JavaScript" to set the email field and click Next.
+          # This avoids unreliable "keystroke" usage.
+          JS=$(cat <<'JS'
+try {
+  var e = document.querySelector('input[type="email"], input[type="text"], input[name="identifier"]');
+  if (e) { e.focus(); e.value = "__EMAIL__"; e.dispatchEvent(new Event('input', {bubbles:true})); }
+  var btn = document.querySelector('#identifierNext, button[jsname="LgbsSe"], button[aria-label="Next"]');
+  if (btn) btn.click();
+} catch(e) { }
+JS
+)
+          # inject email into the JS (escaped)
+          JS2="${JS//__EMAIL__/${EMAIL}}"
+          # run JS in Safari as GUI user
+          sudo -u ${GUI_USER} /usr/bin/osascript -e 'tell application "Safari" to do JavaScript "'"${JS2//\"/\\\"}"'" in document 1' || true
           sleep 3
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/02_after_email.png" || true
 
-      - name: Fill password and sign in
+      - name: Inject password (JS) and sign in
         env:
           PASS: ${{ secrets.GOOGLE_PASS }}
         run: |
-          # Wait for password field to appear, then type password and press return.
-          # This uses keystroke (System Events). Adjust delays if needed.
-          sleep 2
-          sudo -u ${GUI_USER} /usr/bin/osascript -e 'tell application "System Events" to keystroke "'"${{ secrets.GOOGLE_PASS }}"'"' || true
-          sleep 0.3
-          sudo -u ${GUI_USER} /usr/bin/osascript -e 'tell application "System Events" to key code 36' || true
-          sleep 5
+          JS=$(cat <<'JS'
+try {
+  var p = document.querySelector('input[type="password"]');
+  if (p) { p.focus(); p.value = "__PASS__"; p.dispatchEvent(new Event('input', {bubbles:true})); }
+  // try to find and click Sign in / Next button
+  var btn = document.querySelector('#passwordNext, button[jsname="LgbsSe"], button[aria-label="Next"], button[data-id="submit"]');
+  if (btn) btn.click();
+} catch(e) { }
+JS
+)
+          JS2="${JS//__PASS__/${PASS}}"
+          sudo -u ${GUI_USER} /usr/bin/osascript -e 'tell application "Safari" to do JavaScript "'"${JS2//\"/\\\"}"'" in document 1' || true
+          sleep 4
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/03_after_password.png" || true
 
-      - name: Wait for 2FA prompt and capture screenshot (OCR)
+      - name: Repeatedly screenshot while waiting for 2FA approval numbers + OCR
         run: |
-          # Take repeated screenshots to catch the 3-number approval prompt if it appears.
-          # We'll take a few screenshots over ~12s and then OCR the last captured image.
-          for i in 1 2 3 4; do
-            sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/04_2fa_capture_${i}.png" || true
-            sleep 3
+          set -euxo pipefail
+          SECONDS_LEFT=${POLL_SECONDS}
+          INTERVAL=${POLL_INTERVAL}
+          i=0
+          echo "Polling for up to ${POLL_SECONDS}s, interval ${INTERVAL}s"
+          rm -f /tmp/google_2fa_text.txt || true
+          while [ ${SECONDS_LEFT} -gt 0 ]; do
+            i=$((i+1))
+            IMG="${DEBUG_DIR}/04_2fa_capture_${i}.png"
+            sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${IMG}" || true
+            # OCR the screenshot (best-effort)
+            if [ -x "$(which tesseract 2>/dev/null)" ]; then
+              tesseract "${IMG}" /tmp/google_2fa_text_${i} || true
+              # Append to master OCR file and print the last few lines
+              if [ -f /tmp/google_2fa_text_${i}.txt ]; then
+                cat /tmp/google_2fa_text_${i}.txt >> /tmp/google_2fa_text.txt
+                echo "---- OCR snapshot ${i} ----"
+                tail -n 60 /tmp/google_2fa_text_${i}.txt || true
+                echo "---- Extracted digit groups ----"
+                grep -Eo '[0-9]{1,4}' /tmp/google_2fa_text_${i}.txt | tr '\n' ' ' || true
+                echo
+              fi
+            else
+              echo "tesseract not installed"
+            fi
+            # check if we found candidate numbers; if yes, echo and break early (but still keep polling to capture later changes)
+            if [ -f /tmp/google_2fa_text.txt ]; then
+              NUMS=$(grep -Eo '[0-9]{1,4}' /tmp/google_2fa_text.txt | tr '\n' ' ' || true)
+              if [ -n "${NUMS// /}" ]; then
+                echo "Candidate numbers found: ${NUMS}"
+                # keep polling a few more times to capture stability
+              fi
+            fi
+            sleep ${INTERVAL}
+            SECONDS_LEFT=$((SECONDS_LEFT - INTERVAL))
           done
-          # Use the final screenshot for OCR
-          IMG="${DEBUG_DIR}/04_2fa_capture_4.png"
-          if [ -f "${IMG}" ]; then
-            tesseract "${IMG}" /tmp/google_2fa_text || true
-            echo "===== OCR OUTPUT (raw) ====="
-            sed -n '1,200p' /tmp/google_2fa_text.txt || true
-            echo "===== Extracted numbers (grep) ====="
-            # extract groups of digits that look like the short 1-3 digit numbers Google shows
-            grep -Eo '[0-9]{1,3}' /tmp/google_2fa_text.txt | tr '\n' ' ' || true
-            # Save OCR output into debug folder for artifact
-            cp /tmp/google_2fa_text.txt "${DEBUG_DIR}/google_2fa_text.txt" || true
-          else
-            echo "No image for OCR found."
-          fi
+          echo "Polling done. Combined OCR saved to /tmp/google_2fa_text.txt (if any)."
+          # copy OCR file to debug for artifact
+          cp -f /tmp/google_2fa_text.txt "${DEBUG_DIR}/google_2fa_text.txt" || true
+          echo "=== Final OCR excerpt ==="
+          tail -n 200 /tmp/google_2fa_text.txt || true
 
-      - name: Pause to let you tap the correct number on your phone
+      - name: Pause for you to tap correct number on phone
         run: |
-          # Pause so you can look at the artifact/log (OCR output) and tap the correct number on phone.
-          # The workflow sleeps for 120s; you can interrupt the run if needed from the Actions UI.
-          echo "Pausing for 120 seconds for you to confirm the number on your phone."
-          sleep 120
-          echo "Continuing after pause."
+          echo "Workflow will pause for 150 seconds for you to tap the correct number on your phone."
+          sleep 150
+          echo "Resuming."
 
-      - name: Capture post-2FA screenshot
+      - name: Post-2FA screenshot
         run: |
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/05_post_2fa.png" || true
 
       - name: Open Chrome Remote Desktop page
         run: |
           sudo -u ${GUI_USER} /usr/bin/osascript -e 'tell application "Safari" to open location "'"${CRD_URL}"'"' || true
-          sleep 5
+          sleep 6
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/06_crd_page.png" || true
 
       - name: Upload artifacts (screenshots + OCR text)
         uses: actions/upload-artifact@v4
         with:
-          name: safari-crd-2fa-artifacts
+          name: safari-crd-2fa-artifacts-v2
           path: |
             /tmp/debug_screenshots/**
             /tmp/google_2fa_text.txt
