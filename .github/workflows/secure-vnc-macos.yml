@@ -1,117 +1,352 @@
-name: macOS GUI Chrome Remote Desktop Automation
+name: macOS GUI TeamViewer Automation
 
-on:
-  workflow_dispatch:
+on: workflow_dispatch
 
 jobs:
-  gui_crd:
+  gui:
     runs-on: macos-latest
-    env:
-      GUI_USER: vncuser
-      GUI_PASS: Apple@123
-      DEBUG_DIR: /tmp/debug_screenshots
-      CRD_URL: https://remotedesktop.google.com/access
-      GOOGLE_SIGNIN_URL: https://accounts.google.com/signin/v2/identifier
 
     steps:
-      - name: Prepare debug folder
-        run: |
-          mkdir -p "${DEBUG_DIR}"
-          chmod 777 "${DEBUG_DIR}"
+    # -----------------------------
+    # Create debug dir
+    # -----------------------------
+    - name: Prepare debug folder
+      run: mkdir -p /tmp/debug_screenshots
 
-      - name: Create GUI user (vncuser)
-        run: |
-          if ! id -u "${GUI_USER}" >/dev/null 2>&1; then
-            sudo dscl . -create /Users/${GUI_USER}
-            sudo dscl . -create /Users/${GUI_USER} UserShell /bin/bash
-            sudo dscl . -create /Users/${GUI_USER} RealName "VNC User"
-            sudo dscl . -create /Users/${GUI_USER} UniqueID "510"
-            sudo dscl . -create /Users/${GUI_USER} PrimaryGroupID 20
-            sudo dscl . -create /Users/${GUI_USER} NFSHomeDirectory /Users/${GUI_USER}
-            sudo dscl . -passwd /Users/${GUI_USER} "${GUI_PASS}"
-            sudo dscl . -append /Groups/admin GroupMembership ${GUI_USER}
-            sudo createhomedir -c -u ${GUI_USER} >/dev/null 2>&1 || true
-          fi
-          sudo chown -R ${GUI_USER}:staff "${DEBUG_DIR}"
-          chmod -R 777 "${DEBUG_DIR}"
+    # -----------------------------
+    # Create GUI user (Required for GUI processes in CI)
+    # -----------------------------
+    - name: Create user
+      run: |
+        sudo dscl . -create /Users/vncuser
+        sudo dscl . -create /Users/vncuser UserShell /bin/bash
+        sudo dscl . -create /Users/vncuser RealName "VNC User"
+        sudo dscl . -create /Users/vncuser UniqueID 510
+        sudo dscl . -create /Users/vncuser PrimaryGroupID 20
+        sudo dscl . -create /Users/vncuser NFSHomeDirectory /Users/vncuser
+        sudo dscl . -passwd /Users/vncuser Apple@123
+        sudo dscl . -append /Groups/admin GroupMembership vncuser
+        sudo createhomedir -c -u vncuser
 
-      - name: Open Chrome Remote Desktop in Safari
-        run: |
-          sudo -u ${GUI_USER} open -a "Safari" "${CRD_URL}"
-          sleep 8
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/01_open_crd.png"
+    # -----------------------------
+    # Install dependencies
+    # -----------------------------
+    - name: Install deps
+      run: |
+        brew install tesseract cliclick
+        # Tesseract language data is usually included, but good to ensure
+        brew list tesseract 
 
-      - name: Fill Google email
-        env:
-          EMAIL: githubrandomness777@gmail.com
-        run: |
-          # Create JS file to safely fill email
-          cat > /tmp/email.js <<EOF
-var e=document.querySelector("input[type=email]");
-if(e){e.value="$EMAIL";}
-var b=document.querySelector("#identifierNext");
-if(b){b.click();}
-EOF
+    # -----------------------------
+    # Install TeamViewer
+    # -----------------------------
+    - name: Install TeamViewer
+      run: |
+        curl -L -o /tmp/TeamViewer.dmg "https://dl.teamviewer.com/download/version_15x/TeamViewer.dmg"
+        hdiutil attach /tmp/TeamViewer.dmg -mountpoint /Volumes/TeamViewer
+        cp -R /Volumes/TeamViewer/TeamViewer.app /Applications/
+        hdiutil detach /Volumes/TeamViewer
 
-          # AppleScript reads JS file
-          cat > /tmp/run_email.applescript <<'EOF'
-tell application "Safari"
-    do JavaScript (read POSIX file "/tmp/email.js") in document 1
-end tell
-EOF
+    # -----------------------------
+    # Write Visual Automation Script
+    # -----------------------------
+    - name: Write automation script
+      run: |
+        cat << 'PY' > /tmp/automate_tv.py
+        import subprocess
+        import time
+        import re
+        import os
+        import sys
 
-          sudo -u ${GUI_USER} osascript /tmp/run_email.applescript
-          sleep 5
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/02_email.png"
+        DEBUG_DIR = "/tmp/debug_screenshots"
+        USER_PASS = "Apple@123"
 
-      - name: Fill Google password
-        env:
-          PASS: "YOUR_PASSWORD_HERE"
-        run: |
-          cat > /tmp/pass.js <<EOF
-var p=document.querySelector("input[type=password]");
-if(p){p.value="$PASS";}
-var b=document.querySelector("#passwordNext");
-if(b){b.click();}
-EOF
+        def run(cmd):
+            print(f"[CMD] {cmd}")
+            res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            if res.stderr: print(f"[ERR] {res.stderr}")
+            return res.stdout
 
-          cat > /tmp/run_pass.applescript <<'EOF'
-tell application "Safari"
-    do JavaScript (read POSIX file "/tmp/pass.js") in document 1
-end tell
-EOF
+        def shot(name):
+            path = f"{DEBUG_DIR}/{name}"
+            # Capture all screens
+            subprocess.run(f"screencapture -x {path}", shell=True)
+            return path
 
-          sudo -u ${GUI_USER} osascript /tmp/run_pass.applescript
-          sleep 5
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/03_pass.png"
+        def get_window_info(app_name):
+            """Use AppleScript to get the position and size of the front window."""
+            script = f'''
+            tell application "{app_name}"
+                if it is running then
+                    try
+                        set winBounds to bounds of front window
+                        return winBounds as string
+                    on error
+                        return "0,0,0,0"
+                    end try
+                else
+                    return "0,0,0,0"
+                end if
+            end tell
+            '''
+            res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+            # Returns: left, top, right, bottom
+            parts = res.stdout.strip().replace(", ", ",").split(",")
+            if len(parts) == 4:
+                return [int(p) for p in parts]
+            return [0,0,0,0]
 
-      - name: Wait for 2FA / approval prompt
-        run: |
-          echo "Pausing 120s for 2FA approval. Check phone, approve number."
-          sleep 120
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/04_2fa_check.png"
+        def ocr_find_click(img_path, target_text, offset_x=0, offset_y=0, check_only=False):
+            """
+            Performs OCR, finds text, clicks center of it.
+            offset_x, offset_y: click offset relative to text center (e.g. to click a toggle right of text)
+            """
+            # TSV output gives coordinates
+            cmd = f"tesseract {img_path} stdout tsv"
+            res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            
+            lines = res.stdout.strip().split('\n')
+            if len(lines) < 2: return False
 
-      - name: Handle potential 2FA code (OCR)
-        run: |
-          brew install tesseract || true
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/05_2fa_capture.png"
-          tesseract "${DEBUG_DIR}/05_2fa_capture.png" "${DEBUG_DIR}/05_2fa_capture" -l eng
-          echo "OCR output (check number for approval):"
-          cat "${DEBUG_DIR}/05_2fa_capture.txt"
+            # Parse header
+            keys = lines[0].split('\t')
+            
+            for line in lines[1:]:
+                vals = line.split('\t')
+                if len(vals) != len(keys): continue
+                
+                entry = dict(zip(keys, vals))
+                text = entry.get('text', '').strip()
+                
+                # Check if text matches (case insensitive partial match)
+                if target_text.lower() in text.lower():
+                    left = int(entry['left'])
+                    top = int(entry['top'])
+                    width = int(entry['width'])
+                    height = int(entry['height'])
+                    
+                    # Calculate center
+                    cx = left + width // 2
+                    cy = top + height // 2
+                    
+                    # If we know the app window, we can adjust to absolute screen coords
+                    # But screencapture usually captures absolute coords if not specific window
+                    
+                    final_x = cx + offset_x
+                    final_y = cy + offset_y
+                    
+                    print(f"[OCR] Found '{text}' at ({left},{top}). Clicking ({final_x},{final_y})")
+                    
+                    if not check_only:
+                        # Use cliclick: c:x,y for click
+                        subprocess.run(f"cliclick c:{final_x},{final_y}", shell=True)
+                        time.sleep(1)
+                    return True
+            return False
 
-      - name: Confirm CRD main page loaded
-        run: |
-          sleep 5
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/06_crd_main.png"
+        def wait_and_click(target_text, timeout=15, offset_x=0, offset_y=0):
+            """Loop until text found and clicked."""
+            print(f"[WAIT] Looking for '{target_text}'...")
+            start = time.time()
+            while time.time() - start < timeout:
+                img = shot(f"wait_{target_text.replace(' ','_')}.png")
+                if ocr_find_click(img, target_text, offset_x, offset_y):
+                    return True
+                time.sleep(1)
+            print(f"[FAIL] Timeout waiting for '{target_text}'")
+            return False
 
-      - name: Keep runner alive for interaction
-        run: |
-          echo "Runner alive 10m. Use artifacts to check screens."
-          for i in {1..10}; do sleep 60; done
+        def handle_permission_workflow(permission_name):
+            """
+            Generic flow: Click 'Request Access' -> Click 'Open System Settings' -> Toggle -> Handle Password
+            """
+            print(f"--- Handling {permission_name} ---")
+            
+            # 1. Click Request Access button in TeamViewer
+            # Button usually has text "Request Access..."
+            if not wait_and_click("Request Access", timeout=10):
+                # Maybe already enabled or different state
+                print("Could not find Request Access button, checking status...")
+                return
 
-      - name: Upload all screenshots
-        uses: actions/upload-artifact@v4
-        with:
-          name: crd-screenshots
-          path: /tmp/debug_screenshots/**
-          if-no-files-found: ignore
+            time.sleep(2)
+            shot(f"perm_{permission_name}_popup.png")
+
+            # 2. Handle System Popup "TeamViewer wants to access..."
+            # Button text: "Open System Settings"
+            if wait_and_click("Open System Settings", timeout=5):
+                time.sleep(3) # Wait for Settings to open
+                
+                # 3. In System Settings
+                # The list is usually on the right. We need to find TeamViewer and click the toggle.
+                # Since System Settings is a new app, we need to ensure it's front.
+                run("osascript -e 'tell application \"System Settings\" to activate'")
+                time.sleep(2)
+                
+                settings_img = shot(f"perm_{permission_name}_settings.png")
+                
+                # Try to find "TeamViewer" text and click the toggle (usually to the right of the label)
+                # We OCR to find position of "TeamViewer" in the list
+                found_tv = False
+                for _ in range(5):
+                    settings_img = shot(f"perm_{permission_name}_settings_retry.png")
+                    # We click slightly right of the text to hit the toggle
+                    # Tesseract gives us relative coords from screenshot
+                    if ocr_find_click(settings_img, "TeamViewer", offset_x=200, offset_y=0):
+                        found_tv = True
+                        break
+                    time.sleep(1)
+                
+                if not found_tv:
+                    print(f"Could not find TeamViewer in {permission_name} settings list")
+                    # Attempt to scroll or search? Hard in CI.
+                    # Fallback: Click specific coordinates based on resolution (risky)
+                
+                time.sleep(1)
+                
+                # 4. Handle Authentication Prompt
+                # If the system asks for password, the prompt usually appears immediately.
+                auth_img = shot(f"perm_{permission_name}_auth.png")
+                if ocr_find_click(auth_img, "Password", check_only=True):
+                    print("Auth prompt detected.")
+                    # Click password field (OCR found it, but let's use cliclick type command directly)
+                    # Usually focus is on password field automatically.
+                    subprocess.run(f"cliclick t:{USER_PASS}", shell=True)
+                    time.sleep(0.5)
+                    subprocess.run("cliclick kp:enter", shell=True) # Press Enter
+                    print("Password entered.")
+                    time.sleep(2)
+
+                # 5. Close System Settings
+                run("osascript -e 'tell application \"System Settings\" to quit'")
+                time.sleep(1)
+                
+                # 6. Back to TeamViewer, maybe click OK/Done if any leftover dialog
+                run("osascript -e 'tell application \"TeamViewer\" to activate'")
+                time.sleep(1)
+                # Sometimes a "Later" button appears if we fail
+                wait_and_click("Later", timeout=2) 
+            else:
+                print("System popup not found, maybe permissions already granted or changed.")
+
+        # ---------------------------
+        # MAIN EXECUTION FLOW
+        # ---------------------------
+        
+        # 1. Launch TeamViewer
+        print("Launching TeamViewer...")
+        run("sudo -u vncuser open /Applications/TeamViewer.app")
+        time.sleep(10) # Wait for initial load
+        
+        shot("01_launch.png")
+        
+        # 2. Initial Setup Wizard
+        # "How do you want to use TeamViewer?"
+        # Check if wizard exists
+        if ocr_find_click(shot("02_wizard.png"), "How do you want to use"):
+            print("Setup Wizard detected.")
+            # Select "Personal Use"
+            # We click the text or the radio button area
+            wait_and_click("personal use", timeout=5)
+            time.sleep(1)
+            
+            # Click Continue
+            wait_and_click("Continue", timeout=5)
+            time.sleep(2)
+            
+            # Maybe a "Finish" or "Continue" again for license agreement
+            wait_and_click("Continue", timeout=5) 
+            wait_and_click("Finish", timeout=5)
+            time.sleep(3)
+        
+        # 3. Review System Access (Permissions)
+        print("Handling Permissions...")
+        shot("03_main_window.png")
+
+        # Screen Recording
+        # Note: TeamViewer UI might have multiple tabs. We assume default view.
+        # If we see "Review System Access", we proceed.
+        if ocr_find_click(shot("04_permissions_panel.png"), "Review System Access", check_only=True):
+            handle_permission_workflow("Screen Recording")
+            
+            # Accessibility
+            # We need to click the second "Request Access" button.
+            # Since we already clicked one, we need to find the NEXT one.
+            # Strategy: The OCR loop finds all matches. We need to modify or just retry finding "Request Access"
+            # The UI usually updates state.
+            
+            # We might need to click "Accessibility" tab or list item first? 
+            # In modern TV, it's a list within the same window.
+            # Let's just assume we search for the next "Request Access".
+            time.sleep(2)
+            handle_permission_workflow("Accessibility")
+
+            # Close the permissions intro screen if possible
+            wait_and_click("Close", timeout=3)
+
+        # 4. Extract Connection Info
+        print("Extracting ID and Password...")
+        time.sleep(5) # Stabilize
+        final_shot = shot("10_final.png")
+        
+        # OCR the final screen
+        cmd = f"tesseract {final_shot} stdout"
+        res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        text = res.stdout
+        print("=== OCR OUTPUT ===")
+        print(text)
+        
+        # Parse ID (usually 9-10 digits)
+        # The label is "Your ID" or similar
+        # We can regex for IDs or just print the text
+        ids = re.findall(r'\b\d{9,10}\b', text)
+        # Password is random string
+        # Look for label "Password" and next word
+        
+        print("=== PARSED INFO ===")
+        if ids:
+            print(f"Possible TeamViewer ID: {ids[0]}")
+        
+        # Save to file for artifact
+        with open("/tmp/connection_info.txt", "w") as f:
+            f.write(text)
+
+        PY
+
+    # -----------------------------
+    # Run Automation
+    # -----------------------------
+    - name: Run Automation
+      continue-on-error: true
+      run: |
+        # Grant Terminal/SSH accessibility access temporary fix for cliclick
+        # This requires the user to be logged in GUI which vncuser is not automatically in CI 
+        # unless we launch the window server properly.
+        # However, since we created vncuser, we run as them.
+        
+        # We use sudo -u vncuser
+        sudo -u vncuser python3 /tmp/automate_tv.py
+
+    # -----------------------------
+    # Upload Screenshots
+    # -----------------------------
+    - name: Upload Screenshots
+      uses: actions/upload-artifact@v4
+      with:
+        name: debug-visuals
+        path: /tmp/debug_screenshots/
+
+    - name: Upload Connection Info
+      uses: actions/upload-artifact@v4
+      with:
+        name: connection-info
+        path: /tmp/connection_info.txt
+
+    # -----------------------------
+    # Keep Alive
+    # -----------------------------
+    - name: Keep Alive
+      run: |
+        echo "Automation finished. Machine staying alive for manual check if needed."
+        # while true; do sleep 3600; done
