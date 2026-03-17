@@ -13,7 +13,7 @@ jobs:
       SCRIPT_URL: "https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/grant__screen_recording.py"
 
     steps:
-      - name: Prepare debug folder (writable)
+      - name: Prepare debug folder
         run: |
           mkdir -p "${DEBUG_DIR}"
           chmod 777 "${DEBUG_DIR}"
@@ -30,19 +30,13 @@ jobs:
             sudo dscl . -passwd /Users/${GUI_USER} "${GUI_PASS}"
             sudo dscl . -append /Groups/admin GroupMembership ${GUI_USER}
             sudo createhomedir -c -u ${GUI_USER} >/dev/null 2>&1 || true
-            echo "Created user ${GUI_USER}"
-          else
-            echo "User ${GUI_USER} already exists"
           fi
           sudo chown -R ${GUI_USER}:staff "${DEBUG_DIR}"
           chmod -R 777 "${DEBUG_DIR}"
 
-      - name: Install Homebrew tools (tesseract, cliclick, imagemagick)
+      - name: Install tools
         run: |
           brew install tesseract cliclick imagemagick || true
-          echo "TESSERACT: $(which tesseract || true)"
-          echo "CLICLICK: $(which cliclick || true)"
-          echo "CONVERT: $(which convert || true)"
 
       - name: Download & Install RustDesk
         run: |
@@ -50,77 +44,63 @@ jobs:
           hdiutil attach /tmp/rustdesk.dmg -mountpoint /Volumes/RustDesk -nobrowse || true
           cp -R "/Volumes/RustDesk/RustDesk.app" /Applications/ || true
           hdiutil detach "/Volumes/RustDesk" || true
-          echo "RustDesk install attempted"
 
-      - name: Reset TCC permissions for RustDesk (important on Sequoia)
+      - name: First launch + TCC reset + force re-register (fixes broken Configure button)
         run: |
+          sudo -u ${GUI_USER} open -a /Applications/RustDesk.app || true
+          sleep 15
+          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/01_after_launch.png" || true
+          # Reset + re-register bundle (this is the key fix from RustDesk GitHub issues)
           sudo -u ${GUI_USER} tccutil reset ScreenCapture com.carriez.RustDesk || true
           sudo -u ${GUI_USER} tccutil reset Accessibility com.carriez.RustDesk || true
           sudo -u ${GUI_USER} tccutil reset AppleEvents com.carriez.RustDesk || true
-          echo "TCC permissions reset for RustDesk"
-
-      - name: Launch RustDesk as GUI user and capture initial screenshot
-        run: |
+          sudo -u ${GUI_USER} killall RustDesk || true
+          sleep 5
           sudo -u ${GUI_USER} open -a /Applications/RustDesk.app || true
-          sleep 18
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/01_after_launch.png" || true
+          sleep 12
+          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/01b_after_reregister.png" || true
 
-      - name: Download automation script from raw URL
+      - name: Download automation script
         run: |
-          if [ -z "${SCRIPT_URL}" ] || [ "${SCRIPT_URL}" = "YOUR_RAW_SCRIPT_URL_HERE" ]; then
-            echo "ERROR: Please set SCRIPT_URL env to the raw URL of the python script."
-            exit 1
-          fi
           curl -fsSL "${SCRIPT_URL}" -o /tmp/grant_screen_recording.py
-          sudo chown ${GUI_USER}:staff /tmp/grant_screen_recording.py || true
+          sudo chown ${GUI_USER}:staff /tmp/grant_screen_recording.py
           sudo chmod +x /tmp/grant_screen_recording.py
 
-      - name: Run automation script as GUI user
+      - name: Run automation script
         continue-on-error: true
         run: |
           sudo -u ${GUI_USER} env PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin" \
             python3 /tmp/grant_screen_recording.py || true
-          sleep 6
+          sleep 8
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/09_after_script.png" || true
 
-      - name: Extra attempt to click remaining "Allow" dialogs
+      - name: Extra Allow clicks
         run: |
-          sudo -u ${GUI_USER} env PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin" \
-            osascript -e 'tell application "System Events" to repeat 8 times
-              try
-                repeat with p in (every process)
+          sudo -u ${GUI_USER} osascript -e 'tell application "System Events" to repeat 10 times
+            try
+              repeat with p in (every process)
+                repeat with w in (every window of p)
                   try
-                    repeat with w in (every window of p)
-                      try
-                        if exists button "Allow" of w then click button "Allow" of w
-                      end try
-                    end repeat
+                    if exists button "Allow" of w then click button "Allow" of w
                   end try
                 end repeat
-              end try
-              delay 0.6
-            end repeat' || true
-          sleep 2
+              end repeat
+            end try
+            delay 0.5
+          end repeat' || true
+          sleep 3
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/10_after_extra_clicks.png" || true
 
-      - name: Capture final screenshots
+      - name: Final screenshots + OCR
         run: |
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x /tmp/rustdesk.png || true
           sudo chown ${GUI_USER}:staff /tmp/rustdesk.png || true
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/11_final_rustdesk.png" || true
+          sudo -u ${GUI_USER} tesseract /tmp/rustdesk.png /tmp/rustdesk_ocr --psm 6 || true
+          echo "--- FINAL OCR ---"
+          cat /tmp/rustdesk_ocr.txt || true
 
-      - name: OCR attempt on final RustDesk window
-        run: |
-          sudo -u ${GUI_USER} env PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
-            bash -lc 'if [ -f /tmp/rustdesk.png ]; then
-              tesseract /tmp/rustdesk.png /tmp/rustdesk_ocr --psm 6 || true;
-              echo "--- OCR TEXT (psm 6) ---";
-              cat /tmp/rustdesk_ocr.txt || true;
-            else
-              echo "no rustdesk.png to OCR";
-            fi'
-
-      - name: Upload ALL screenshots artifact
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: all-screenshots
@@ -129,7 +109,7 @@ jobs:
             /tmp/rustdesk.png
           if-no-files-found: ignore
 
-      - name: Keep runner alive (manual debug)
+      - name: Keep alive
         run: |
-          echo "Runner stays alive for 6 hours. Download artifacts first!"
-          for i in {1..6}; do echo "sleeping $i"; sleep 3600; done
+          echo "Download artifacts now - runner stays alive 6h"
+          for i in {1..6}; do sleep 3600; done
