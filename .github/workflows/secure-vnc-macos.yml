@@ -45,12 +45,6 @@ jobs:
           hdiutil attach /tmp/anydesk.dmg -mountpoint /Volumes/AnyDesk -nobrowse || true
           cp -R "/Volumes/AnyDesk/AnyDesk.app" /Applications/ || true
           hdiutil detach "/Volumes/AnyDesk" || true
-          echo "AnyDesk installed from DMG"
-
-      - name: Install AnyDesk service (required for unattended password)
-        run: |
-          sudo /Applications/AnyDesk.app/Contents/MacOS/AnyDesk --install-service || true
-          echo "AnyDesk service installed"
 
       - name: Reset TCC + launch AnyDesk
         run: |
@@ -75,7 +69,7 @@ jobs:
           sudo -u ${GUI_USER} killall AnyDesk || true
           sleep 5
           sudo -u ${GUI_USER} open -a "/Applications/AnyDesk.app" || true
-          sleep 20   # wait for service to start after --install-service
+          sleep 25   # critical wait for daemon to start on macOS
           echo "${UNATTENDED_PASSWORD}" | sudo /Applications/AnyDesk.app/Contents/MacOS/AnyDesk --set-password
           echo "Unattended password set to: ${UNATTENDED_PASSWORD}"
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/12_unattended_enabled.png" || true
