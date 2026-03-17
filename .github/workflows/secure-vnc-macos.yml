@@ -66,12 +66,14 @@ jobs:
 
       - name: Enable Unattended Access (password Apple@123)
         run: |
+          # Restart AnyDesk cleanly so the service starts properly
+          sudo -u ${GUI_USER} killall AnyDesk || true
+          sleep 4
+          sudo -u ${GUI_USER} open -a "/Applications/AnyDesk.app" || true
+          sleep 15   # critical wait for the AnyDesk service to fully start
+          # Now set the password (official CLI method)
           echo "${UNATTENDED_PASSWORD}" | sudo /Applications/AnyDesk.app/Contents/MacOS/AnyDesk --set-password
           echo "Unattended password set to: ${UNATTENDED_PASSWORD}"
-          sudo -u ${GUI_USER} killall AnyDesk || true
-          sleep 6
-          sudo -u ${GUI_USER} open -a "/Applications/AnyDesk.app" || true
-          sleep 12
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/12_unattended_enabled.png" || true
 
       - name: Final cleanup + screenshot
