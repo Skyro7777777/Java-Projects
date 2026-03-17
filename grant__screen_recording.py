@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# Robust automation with verification & retries
-import subprocess, time, pathlib, sys, os, signal
+# Robust automation with OCR & AppleScript location for Configure button
+import subprocess, time, pathlib, sys, os, signal, re
 
 DEBUG = pathlib.Path("/tmp/debug_screenshots")
 DEBUG.mkdir(parents=True, exist_ok=True)
@@ -58,7 +58,6 @@ def applescript(script, check=False):
     return result.returncode == 0, result.stdout.strip()
 
 def cliclick(x, y):
-    """Click using cliclick (fallback to AppleScript if missing)."""
     try:
         subprocess.run([CLICLICK, f"c:{x},{y}"], check=True, timeout=5)
         log(f"cliclick at ({x},{y})")
@@ -67,7 +66,6 @@ def cliclick(x, y):
         applescript(f'tell application "System Events" to click at {{{x},{y}}}')
 
 def wait_for_no_dialogs(timeout=30):
-    """Wait until no window contains an 'Allow' button."""
     start = time.time()
     while time.time() - start < timeout:
         ok, out = applescript('''
@@ -102,89 +100,166 @@ def trigger_and_grant_bash():
     else:
         log("Bash permission may not be fully granted, continuing")
 
+def get_button_position_by_title(app_name, button_title):
+    """AppleScript to get (x,y) of button with given title in app's front window."""
+    script = f'''
+    tell application "System Events"
+        tell process "{app_name}"
+            set frontmost to true
+            try
+                set theButton to first button of window 1 whose title is "{button_title}"
+                set btnPosition to position of theButton
+                set btnSize to size of theButton
+                return (item 1 of btnPosition + (item 1 of btnSize) / 2) & "," & (item 2 of btnPosition + (item 2 of btnSize) / 2)
+            on error
+                return "not found"
+            end try
+        end tell
+    end tell
+    '''
+    ok, out = applescript(script)
+    if ok and out != "not found" and ',' in out:
+        x, y = map(int, out.split(','))
+        log(f"Found '{button_title}' at ({x},{y}) via AppleScript")
+        return (x, y)
+    return None
+
+def find_configure_by_ocr():
+    """Use tesseract to locate 'Configure' on screen, return center coordinates."""
+    shot("ocr_search.png")
+    # Run tesseract with bounding boxes
+    tmp_img = DEBUG / "ocr_tmp.png"
+    subprocess.run(["/usr/sbin/screencapture", "-x", str(tmp_img)], check=False)
+    base = tmp_img.with_suffix('')
+    subprocess.run([TESSERACT, str(tmp_img), str(base), "tsv"], check=False, capture_output=True)
+    tsv = base.with_suffix('.tsv')
+    if tsv.exists():
+        with open(tsv) as f:
+            lines = f.readlines()
+        tsv.unlink()
+        tmp_img.unlink()
+        for line in lines[1:]:
+            parts = line.strip().split('\t')
+            if len(parts) >= 12 and parts[11] and int(parts[10]) > 50:
+                text = parts[11].lower()
+                if "configure" in text:
+                    x = int(parts[6]) + int(parts[8])//2
+                    y = int(parts[7]) + int(parts[9])//2
+                    log(f"Found 'Configure' via OCR at ({x},{y})")
+                    return (x, y)
+    log("OCR did not find 'Configure'")
+    return None
+
 def click_configure():
-    """Try multiple methods to click Configure, verify success."""
+    """Try multiple methods to click Configure, return True if successful."""
     log("Attempting to click 'Configure' in RustDesk...")
-    # Method 1: AppleScript targeting button
-    success, _ = applescript('''
-        tell application "System Events"
-            tell process "RustDesk"
-                set frontmost to true
-                try
-                    click (first button of window 1 whose title is "Configure")
-                    return "clicked"
-                end try
-            end tell
-            return "failed"
-        end tell
-    ''')
-    if success and "clicked" in _:
-        log("AppleScript clicked Configure")
-        return True
-    # Method 2: cliclick at bottom center
-    log("AppleScript failed, using cliclick fallback")
-    cliclick(960, 810)
-    time.sleep(2)
-    # Verify: after click, should see permission dialog
-    ok, out = applescript('''
-        tell application "System Events"
-            if exists (first window whose title contains "Screen Recording") then
-                return "dialog_found"
-            else
-                return "no_dialog"
-            end if
-        end tell
-    ''')
-    if "dialog_found" in out:
-        log("Configure click successful (dialog appeared)")
-        return True
-    log("Configure click may have failed – dialog not detected")
+    methods = [
+        ("AppleScript position", lambda: get_button_position_by_title("RustDesk", "Configure")),
+        ("AppleScript position (lowercase)", lambda: get_button_position_by_title("RustDesk", "configure")),
+        ("AppleScript position (process rustdesk)", lambda: get_button_position_by_title("rustdesk", "Configure")),
+        ("OCR", find_configure_by_ocr),
+        ("Fallback coordinate (960,810)", lambda: (960, 810)),
+        ("Fallback coordinate (950,800)", lambda: (950, 800)),
+        ("Fallback coordinate (970,820)", lambda: (970, 820)),
+    ]
+    for method_name, method_func in methods:
+        log(f"Trying method: {method_name}")
+        pos = method_func()
+        if pos:
+            x, y = pos
+            cliclick(x, y)
+            time.sleep(3)
+            # Verify if permission dialog appeared
+            ok, out = applescript('''
+                tell application "System Events"
+                    if exists (first window whose title contains "Screen Recording") then
+                        return "dialog_found"
+                    else
+                        return "no_dialog"
+                    end if
+                end tell
+            ''')
+            if "dialog_found" in out:
+                log("Configure click successful – dialog detected")
+                shot("02_after_configure_success.png")
+                return True
+            else:
+                log("Dialog not detected after click, trying next method")
+        else:
+            log(f"Method {method_name} returned no position")
+    log("All methods failed to click Configure")
+    shot("02_after_configure_failed.png")
     return False
 
 def click_open_system_settings():
     log("Looking for 'Open System Settings' button...")
-    # AppleScript click
-    success, _ = applescript('''
-        tell application "System Events"
-            try
-                set theButton to first button of (first window whose title contains "Screen Recording") whose title contains "Open System Settings"
-                click theButton
-                return "clicked"
-            end try
-            return "failed"
-        end tell
-    ''')
-    if success and "clicked" in _:
-        log("AppleScript clicked Open System Settings")
-        return True
-    log("AppleScript failed, using fallback click at left-center")
-    cliclick(760, 540)
-    time.sleep(3)
-    # Verify System Settings opened
-    ok, out = applescript('''
-        tell application "System Events"
-            if exists process "System Settings" then return "yes"
-            return "no"
-        end tell
-    ''')
-    if out == "yes":
-        log("System Settings opened")
-        return True
-    log("System Settings may not have opened")
+    # Similar multi-method approach
+    methods = [
+        ("AppleScript by title", lambda: get_button_position_by_title("System Events", "Open System Settings")),
+        ("OCR", lambda: find_text_by_ocr("Open System Settings")),
+        ("Fallback (760,540)", lambda: (760, 540)),
+    ]
+    for method_name, method_func in methods:
+        log(f"Trying method: {method_name}")
+        pos = method_func()
+        if pos:
+            cliclick(*pos)
+            time.sleep(3)
+            # Verify System Settings opened
+            ok, out = applescript('''
+                tell application "System Events"
+                    if exists process "System Settings" then return "yes"
+                    return "no"
+                end tell
+            ''')
+            if out == "yes":
+                log("System Settings opened")
+                shot("03_after_open_settings_success.png")
+                return True
+    log("Failed to open System Settings")
+    shot("03_after_open_settings_failed.png")
     return False
+
+def find_text_by_ocr(target):
+    # Same as find_configure_by_ocr but generic
+    tmp_img = DEBUG / "ocr_tmp2.png"
+    subprocess.run(["/usr/sbin/screencapture", "-x", str(tmp_img)], check=False)
+    base = tmp_img.with_suffix('')
+    subprocess.run([TESSERACT, str(tmp_img), str(base), "tsv"], check=False, capture_output=True)
+    tsv = base.with_suffix('.tsv')
+    if tsv.exists():
+        with open(tsv) as f:
+            lines = f.readlines()
+        tsv.unlink()
+        tmp_img.unlink()
+        target_lower = target.lower()
+        for line in lines[1:]:
+            parts = line.strip().split('\t')
+            if len(parts) >= 12 and parts[11] and int(parts[10]) > 50:
+                text = parts[11].lower()
+                if target_lower in text:
+                    x = int(parts[6]) + int(parts[8])//2
+                    y = int(parts[7]) + int(parts[9])//2
+                    log(f"Found '{target}' via OCR at ({x},{y})")
+                    return (x, y)
+    log(f"OCR did not find '{target}'")
+    return None
 
 def toggle_rustdesk_in_settings():
     log("Toggling RustDesk in System Settings...")
-    # Wait for list to populate
     time.sleep(5)
-    # Try OCR to find RustDesk text (if tesseract works)
-    import re
-    shot("pre_toggle.png")
-    # Use cliclick at approximate toggle area (right side)
-    cliclick(1500, 400)
+    # Try to find the toggle via OCR or coordinates
+    pos = find_text_by_ocr("RustDesk")
+    if pos:
+        toggle_x = pos[0] + 200
+        toggle_y = pos[1]
+        cliclick(toggle_x, toggle_y)
+        log("Clicked toggle based on RustDesk text position")
+    else:
+        log("Using fallback toggle position (1500,400)")
+        cliclick(1500, 400)
     time.sleep(2)
-    shot("post_toggle.png")
-    log("Toggle clicked (assumed)")
+    shot("04_after_toggle.png")
 
 def handle_password():
     log("Checking for password prompt...")
@@ -236,21 +311,15 @@ shot("01_after_bash.png")
 
 # Step 1: Click Configure
 if not click_configure():
-    log("FATAL: Could not click Configure – aborting")
-    stop_allow_clicker()
-    sys.exit(1)
-shot("02_after_configure.png")
+    log("WARNING: Could not click Configure – will try to continue but may fail")
+    # We'll continue anyway to capture more debug info
 
-# Wait for permission dialog and click Open System Settings
+# Step 2: Click Open System Settings
 if not click_open_system_settings():
-    log("FATAL: Could not open System Settings")
-    stop_allow_clicker()
-    sys.exit(1)
-shot("03_after_open_settings.png")
+    log("WARNING: Could not open System Settings")
 
 # Step 3: Toggle RustDesk
 toggle_rustdesk_in_settings()
-shot("04_after_toggle.png")
 
 # Step 4: Password
 handle_password()
