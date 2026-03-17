@@ -1,151 +1,42 @@
-name: AnyDesk macOS FULL popup fix + permissions + unattended
+- name: Run automation script (permissions + add to both panes)
+  run: |
+    curl -fsSL "${SCRIPT_URL}" -o /tmp/grant_screen_recording.py
+    sudo chown ${GUI_USER}:staff /tmp/grant_screen_recording.py
+    sudo chmod +x /tmp/grant_screen_recording.py
+    sudo -u ${GUI_USER} env PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin" \
+      python3 /tmp/grant_screen_recording.py || true
+    sleep 15
+    sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/09_after_script.png" || true
 
-on: workflow_dispatch
+- name: Upload automation log
+  if: always()
+  uses: actions/upload-artifact@v4
+  with:
+    name: automation-log
+    path: /tmp/anydesk_automation.log
+    if-no-files-found: ignore
 
-jobs:
-  gui:
-    runs-on: macos-latest
+# (Optional) You can remove the separate "Enable Unattended Access" step,
+# as it's now handled in the script. But if you keep it, run it as user:
+- name: Enable Unattended Access (password Apple@123)
+  run: |
+    sudo -u ${GUI_USER} open -a "/Applications/AnyDesk.app" || true
+    sleep 20
+    sudo -u ${GUI_USER} bash -c 'echo "${UNATTENDED_PASSWORD}" | /Applications/AnyDesk.app/Contents/MacOS/AnyDesk --set-password' || true
+    echo "Unattended password set to: ${UNATTENDED_PASSWORD}"
+    sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/12_unattended_enabled.png" || true
 
-    env:
-      GUI_USER: vncuser
-      GUI_PASS: Apple@123
-      DEBUG_DIR: /tmp/debug_screenshots
-      ANYDESK_DMG_URL: https://download.anydesk.com/anydesk.dmg
-      APPLESCRIPT_URL: "https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/clear_popups.applescript"
-      UNATTENDED_PASSWORD: Apple@123
+- name: Final cleanup + screenshot
+  run: |
+    sudo -u ${GUI_USER} /usr/sbin/screencapture -x /tmp/anydesk_final.png || true
+    sudo chown ${GUI_USER}:staff /tmp/anydesk_final.png || true
+    sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/11_final_anydesk.png" || true
 
-    steps:
-
-      - name: Prepare debug folder
-        run: |
-          mkdir -p "${DEBUG_DIR}"
-          chmod 777 "${DEBUG_DIR}"
-
-
-      - name: Create GUI user
-        run: |
-          if ! id -u "${GUI_USER}" >/dev/null 2>&1; then
-            sudo dscl . -create /Users/${GUI_USER}
-            sudo dscl . -create /Users/${GUI_USER} UserShell /bin/bash
-            sudo dscl . -create /Users/${GUI_USER} RealName "GUI User"
-            sudo dscl . -create /Users/${GUI_USER} UniqueID 510
-            sudo dscl . -create /Users/${GUI_USER} PrimaryGroupID 20
-            sudo dscl . -create /Users/${GUI_USER} NFSHomeDirectory /Users/${GUI_USER}
-            sudo dscl . -passwd /Users/${GUI_USER} "${GUI_PASS}"
-            sudo dscl . -append /Groups/admin GroupMembership ${GUI_USER}
-            sudo createhomedir -c -u ${GUI_USER} || true
-          fi
-
-          sudo chown -R ${GUI_USER}:staff "${DEBUG_DIR}"
-
-
-      - name: Install tools
-        run: |
-          brew install cliclick tesseract || true
-
-
-      - name: Install AnyDesk
-        run: |
-          curl -L -o /tmp/anydesk.dmg "${ANYDESK_DMG_URL}"
-
-          hdiutil attach /tmp/anydesk.dmg -mountpoint /Volumes/AnyDesk || true
-
-          cp -R "/Volumes/AnyDesk/AnyDesk.app" /Applications/
-
-          hdiutil detach /Volumes/AnyDesk || true
-
-
-      - name: Screenshot before launch
-        run: |
-          sudo -u ${GUI_USER} screencapture -x "${DEBUG_DIR}/00_before.png" || true
-
-
-      - name: Launch AnyDesk
-        run: |
-          sudo -u ${GUI_USER} open -a "/Applications/AnyDesk.app" || true
-          sleep 6
-
-          sudo -u ${GUI_USER} screencapture -x "${DEBUG_DIR}/01_after_launch.png" || true
-
-
-      - name: Clear popups using RAW AppleScript
-        run: |
-
-          if [ -z "${APPLESCRIPT_URL}" ]; then
-            echo "NO APPLESCRIPT URL"
-            exit 1
-          fi
-
-          curl -fsSL "${APPLESCRIPT_URL}" | sudo -u ${GUI_USER} osascript - || true
-
-          sleep 2
-
-          sudo -u ${GUI_USER} screencapture -x "${DEBUG_DIR}/02_after_popup_clear.png" || true
-
-
-      - name: Clear popups again (second pass)
-        run: |
-
-          curl -fsSL "${APPLESCRIPT_URL}" | sudo -u ${GUI_USER} osascript - || true
-
-          sleep 2
-
-          sudo -u ${GUI_USER} screencapture -x "${DEBUG_DIR}/03_after_popup_clear2.png" || true
-
-
-      - name: Find AnyDesk binary
-        run: |
-
-          BIN=$(find /Applications/AnyDesk.app/Contents/MacOS -type f | head -n1)
-
-          echo "BIN=$BIN" >> $GITHUB_ENV
-
-          echo "$BIN"
-
-
-      - name: Start AnyDesk service
-        run: |
-
-          echo "Binary = $BIN"
-
-          pkill -f AnyDesk || true
-          sleep 2
-
-          sudo "$BIN" --service > /tmp/anydesk_service.log 2>&1 &
-
-          sleep 5
-
-          sudo "$BIN" --get-id > /tmp/anydesk_id.txt 2>&1 || true
-
-
-      - name: Set unattended password
-        run: |
-
-          for i in {1..6}
-          do
-            echo "$UNATTENDED_PASSWORD" | sudo "$BIN" --set-password && break
-            sleep 2
-          done
-
-          sudo -u ${GUI_USER} screencapture -x "${DEBUG_DIR}/04_after_password.png" || true
-
-
-      - name: Final screenshot
-        run: |
-          sudo -u ${GUI_USER} screencapture -x "${DEBUG_DIR}/05_final.png" || true
-
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: anydesk-debug
-          path: |
-            /tmp/debug_screenshots/**
-            /tmp/anydesk_service.log
-            /tmp/anydesk_id.txt
-
-
-      - name: Keep runner alive
-        run: |
-          echo "Runner alive 10 min"
-          sleep 600
+- name: Upload artifacts
+  uses: actions/upload-artifact@v4
+  with:
+    name: all-screenshots
+    path: |
+      /tmp/debug_screenshots/**
+      /tmp/anydesk_final.png
+    if-no-files-found: ignore
