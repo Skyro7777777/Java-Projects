@@ -12,15 +12,13 @@ jobs:
       RUSTDESK_DMG_URL: https://github.com/rustdesk/rustdesk/releases/download/1.4.6/rustdesk-1.4.6-x86_64.dmg
 
     steps:
-      - name: Prepare debug folder (writable by GUI user)
+      - name: Prepare debug folder (writable)
         run: |
           mkdir -p "${DEBUG_DIR}"
-          # create vnc user if not present, then chown debug dir later in user creation step
           chmod 777 "${DEBUG_DIR}"
 
       - name: Create GUI user (vncuser)
         run: |
-          # create the GUI user (skip error if exists)
           if ! id -u "${GUI_USER}" >/dev/null 2>&1; then
             sudo dscl . -create /Users/${GUI_USER}
             sudo dscl . -create /Users/${GUI_USER} UserShell /bin/bash
@@ -35,7 +33,7 @@ jobs:
           else
             echo "User ${GUI_USER} already exists"
           fi
-          # ensure debug dir is owned/writable by GUI user
+          # ensure debug dir ownership
           sudo chown -R ${GUI_USER}:staff "${DEBUG_DIR}"
           chmod -R 777 "${DEBUG_DIR}"
 
@@ -53,20 +51,19 @@ jobs:
           hdiutil detach "/Volumes/RustDesk" || true
           echo "RustDesk install attempted"
 
-      - name: Launch RustDesk as GUI user (give it time)
+      - name: Launch RustDesk as GUI user and take initial screenshot
         run: |
           sudo -u ${GUI_USER} open -a /Applications/RustDesk.app || true
-          # allow time for initial permission popup(s) to appear
           sleep 12
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/01_after_launch.png" || true
 
-      - name: Write inline automation script (runs as GUI user)
+      - name: Write automation script (as file) — will be run as GUI user
         run: |
           cat > /tmp/grant_screen_recording.py <<'PY'
 #!/usr/bin/env python3
 # Best-effort UI automation: click Allow/Open System Settings, open System Settings,
 # search for "RustDesk", try to toggle switch, and save debug screenshots.
-import subprocess, time, pathlib, os, sys
+import subprocess, time, pathlib
 
 DEBUG = pathlib.Path("/tmp/debug_screenshots")
 DEBUG.mkdir(parents=True, exist_ok=True)
@@ -87,7 +84,7 @@ def applescript(script):
 # 0) initial
 shot("02_start.png")
 
-# 1) aggressively click standard dialog buttons ("Allow", "Open System Settings")
+# 1) aggressively click standard dialog buttons ("Allow", "Open System Settings", "Open System Preferences")
 for i in range(12):
     script = '''
     tell application "System Events"
@@ -113,28 +110,32 @@ for i in range(12):
     shot(f"03_clear_{i}.png")
     time.sleep(0.7)
 
-# 2) open System Settings (macOS 13+/14+ named "System Settings")
+# 2) open System Settings (macOS 13+/14+)
 applescript('tell application "System Settings" to activate')
 time.sleep(2)
 shot("04_settings_opened.png")
 
-# 3) attempt to focus search and type "RustDesk"
+# 3) attempt to search RustDesk (send keystrokes)
 applescript('tell application "System Events" to keystroke "RustDesk"')
 time.sleep(2)
 shot("05_search_typed.png")
 
-# 4) try to click common candidate toggle positions (fallback)
+# 4) try cliclick coordinate fallback positions (common area for toggles)
 cands = [(1000,360),(1100,420),(1200,480),(900,420)]
 for x,y in cands:
-    # use cliclick if available, otherwise try AppleScript coordinate click
-    ret = subprocess.run(["/usr/local/bin/cliclick", f"c:{x},{y}"], check=False)
-    if ret.returncode != 0:
-        # AppleScript coordinate click fallback (may not be supported)
-        applescript(f'tell application "System Events" to click at {{{x},{y}}}')
+    # prefer installed cliclick binary
+    try:
+        subprocess.run(["/usr/local/bin/cliclick", f"c:{x},{y}"], check=False)
+    except Exception:
+        try:
+            subprocess.run(["/opt/homebrew/bin/cliclick", f"c:{x},{y}"], check=False)
+        except Exception:
+            # apple-script coordinate click fallback
+            applescript(f'tell application "System Events" to click at {{{x},{y}}}')
     time.sleep(0.6)
     shot(f"06_click_{x}_{y}.png")
 
-# 5) try again to clear dialogs after toggles
+# 5) another pass to clear any remaining dialogs
 for i in range(6):
     applescript(script)
     shot(f"07_posttoggle_{i}.png")
@@ -142,20 +143,21 @@ for i in range(6):
 
 # 6) final screenshots
 shot("08_final_system.png")
-# also take a /tmp/rustdesk.png for OCR attempts later
-subprocess.run(["/usr/sbin/screencapture","-x","/tmp/rustdesk.png"], check=False)
+# take /tmp/rustdesk.png for OCR later
+try:
+    subprocess.run(["/usr/sbin/screencapture","-x","/tmp/rustdesk.png"], check=False)
+except Exception as e:
+    print("final screencapture failed:", e)
 print("Automation script done")
 PY
-          sudo chown ${GUI_USER}:staff /tmp/grant_screen_recording.py
-          sudo chmod +x /tmp/grant_screen_recording.py
+          sudo chown ${GUI_USER}:staff /tmp/grant_screen_recording.py || true
+          sudo chmod +x /tmp/grant_screen_recording.py || true
 
       - name: Run automation script as GUI user (best-effort)
         continue-on-error: true
         run: |
-          # ensure PATH includes brew and common locations for the GUI user
           sudo -u ${GUI_USER} env PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin" \
             python3 /tmp/grant_screen_recording.py || true
-          # give OS a moment to settle and then capture a fresh screenshot
           sleep 2
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/09_after_script.png" || true
 
@@ -178,7 +180,7 @@ PY
           sleep 1
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/10_after_extra_clicks.png" || true
 
-      - name: Capture final RustDesk screenshot as GUI user (for OCR & artifacts)
+      - name: Capture final RustDesk screenshot as GUI user
         run: |
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x /tmp/rustdesk.png || true
           sudo chown ${GUI_USER}:staff /tmp/rustdesk.png || true
@@ -186,7 +188,6 @@ PY
 
       - name: OCR attempt (best-effort)
         run: |
-          # Run as GUI user so tesseract runs in proper PATH and any user-level config resolves
           sudo -u ${GUI_USER} env PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
             bash -lc 'if [ -f /tmp/rustdesk.png ]; then tesseract /tmp/rustdesk.png /tmp/rustdesk_ocr || true; echo "--- OCR TEXT ---"; cat /tmp/rustdesk_ocr.txt || true; else echo "no rustdesk.png to OCR"; fi'
 
@@ -199,7 +200,7 @@ PY
             /tmp/rustdesk.png
           if-no-files-found: ignore
 
-      - name: Keep runner alive (so you can connect if needed)
+      - name: Keep runner alive (manual debug window)
         run: |
           echo "Runner will remain alive for manual debugging (6 hours). Download artifacts first."
           for i in {1..6}; do echo "sleeping $i"; sleep 3600; done
