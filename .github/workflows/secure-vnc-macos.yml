@@ -1,162 +1,204 @@
-name: Safari -> Google sign-in -> OCR 2FA -> open Chrome Remote Desktop (v2)
+name: macOS Full CRD automation
 
 on:
   workflow_dispatch:
 
 jobs:
-  safari-crd:
+  crd:
     runs-on: macos-latest
+
     env:
       GUI_USER: vncuser
       GUI_PASS: Apple@123
       DEBUG_DIR: /tmp/debug_screenshots
-      CRD_URL: "https://remotedesktop.google.com/access"
-      GOOGLE_SIGNIN_URL: "https://accounts.google.com/signin/v2/identifier"
-      # how long to keep polling/waiting (seconds) for the 2FA approval numbers
-      POLL_SECONDS: "180"
-      POLL_INTERVAL: "5"
+
+      GOOGLE_SIGNIN_URL: https://accounts.google.com/signin/v2/identifier
+      CRD_URL: https://remotedesktop.google.com/access
+
+      POLL_SECONDS: 180
+      POLL_INTERVAL: 5
 
     steps:
-      - name: Prepare debug folder
-        run: |
-          mkdir -p "${DEBUG_DIR}"
-          chmod 777 "${DEBUG_DIR}"
 
-      - name: Create GUI user (vncuser)
-        run: |
-          if ! id -u "${GUI_USER}" >/dev/null 2>&1; then
-            sudo dscl . -create /Users/${GUI_USER}
-            sudo dscl . -create /Users/${GUI_USER} UserShell /bin/bash
-            sudo dscl . -create /Users/${GUI_USER} RealName "GUI User"
-            sudo dscl . -create /Users/${GUI_USER} UniqueID 510
-            sudo dscl . -create /Users/${GUI_USER} PrimaryGroupID 20
-            sudo dscl . -create /Users/${GUI_USER} NFSHomeDirectory /Users/${GUI_USER}
-            sudo dscl . -passwd /Users/${GUI_USER} "${GUI_PASS}"
-            sudo dscl . -append /Groups/admin GroupMembership ${GUI_USER}
-            sudo createhomedir -c -u ${GUI_USER} >/dev/null 2>&1 || true
+    - name: prepare folders
+      run: |
+        mkdir -p "$DEBUG_DIR"
+        chmod 777 "$DEBUG_DIR"
+
+    - name: create gui user
+      run: |
+        if ! id -u ${GUI_USER}; then
+          sudo dscl . -create /Users/${GUI_USER}
+          sudo dscl . -create /Users/${GUI_USER} UserShell /bin/bash
+          sudo dscl . -create /Users/${GUI_USER} RealName "GUI"
+          sudo dscl . -create /Users/${GUI_USER} UniqueID 510
+          sudo dscl . -create /Users/${GUI_USER} PrimaryGroupID 20
+          sudo dscl . -create /Users/${GUI_USER} NFSHomeDirectory /Users/${GUI_USER}
+          sudo dscl . -passwd /Users/${GUI_USER} "${GUI_PASS}"
+          sudo createhomedir -c -u ${GUI_USER} || true
+        fi
+
+        sudo chown -R ${GUI_USER}:staff "$DEBUG_DIR" || true
+
+
+    - name: install tools
+      run: |
+        brew install tesseract cliclick || true
+
+
+    - name: open safari signin
+      run: |
+        sudo -u ${GUI_USER} osascript -e 'tell app "Safari" to activate'
+        sudo -u ${GUI_USER} osascript -e 'tell app "Safari" to open location "'"$GOOGLE_SIGNIN_URL"'"'
+        sleep 4
+        sudo -u ${GUI_USER} screencapture -x "$DEBUG_DIR/01_signin.png"
+
+
+    - name: fill email
+      env:
+        EMAIL: ${{ secrets.GOOGLE_EMAIL }}
+      run: |
+
+        JS='
+        var e=document.querySelector("input[type=email]");
+        if(e){e.value="EMAILX";}
+        var b=document.querySelector("#identifierNext");
+        if(b){b.click();}
+        '
+
+        JS=${JS/EMAILX/$EMAIL}
+
+        sudo -u ${GUI_USER} osascript \
+        -e "tell app \"Safari\" to do JavaScript \"$JS\" in document 1"
+
+        sleep 4
+        sudo -u ${GUI_USER} screencapture -x "$DEBUG_DIR/02_email.png"
+
+
+
+    - name: fill password
+      env:
+        PASS: ${{ secrets.GOOGLE_PASS }}
+      run: |
+
+        JS='
+        var p=document.querySelector("input[type=password]");
+        if(p){p.value="PASSX";}
+        var b=document.querySelector("#passwordNext");
+        if(b){b.click();}
+        '
+
+        JS=${JS/PASSX/$PASS}
+
+        sudo -u ${GUI_USER} osascript \
+        -e "tell app \"Safari\" to do JavaScript \"$JS\" in document 1"
+
+        sleep 5
+        sudo -u ${GUI_USER} screencapture -x "$DEBUG_DIR/03_pass.png"
+
+
+
+    - name: OCR loop for 2FA numbers
+      run: |
+
+        SECONDS_LEFT=$POLL_SECONDS
+        i=0
+
+        while [ $SECONDS_LEFT -gt 0 ]; do
+
+          i=$((i+1))
+
+          IMG="$DEBUG_DIR/2fa_$i.png"
+
+          sudo -u ${GUI_USER} screencapture -x "$IMG" || true
+
+          tesseract "$IMG" /tmp/txt$i || true
+
+          if [ -f /tmp/txt$i.txt ]; then
+
+            echo ===== OCR $i =====
+
+            cat /tmp/txt$i.txt
+
+            grep -Eo '[0-9]{1,4}' /tmp/txt$i.txt || true
+
           fi
-          sudo chown -R ${GUI_USER}:staff "${DEBUG_DIR}" || true
-          chmod -R 777 "${DEBUG_DIR}" || true
 
-      - name: Install OCR & helpers
-        run: |
-          brew install tesseract cliclick || true
-          echo "TESSERACT: $(which tesseract || true)"
-          echo "CLICLICK: $(which cliclick || true)"
+          sleep $POLL_INTERVAL
+          SECONDS_LEFT=$((SECONDS_LEFT-POLL_INTERVAL))
 
-      - name: Launch Safari and open Google signin
-        run: |
-          sudo -u ${GUI_USER} /usr/bin/osascript -e 'tell application "Safari" to activate'
-          sudo -u ${GUI_USER} /usr/bin/osascript -e 'tell application "Safari" to open location "'"${GOOGLE_SIGNIN_URL}"'"'
+        done
+
+
+    - name: wait for manual phone approval
+      run: |
+        echo WAITING
+        sleep 120
+
+
+
+    - name: open CRD page
+      run: |
+
+        sudo -u ${GUI_USER} osascript \
+        -e 'tell app "Safari" to open location "'"$CRD_URL"'"'
+
+        sleep 6
+
+        sudo -u ${GUI_USER} screencapture \
+        -x "$DEBUG_DIR/04_crd.png"
+
+
+
+    - name: wait for download
+      run: |
+        sleep 20
+        sudo -u ${GUI_USER} screencapture -x "$DEBUG_DIR/05_download.png"
+
+
+
+    - name: install pkg if exists
+      run: |
+
+        PKG=$(ls /Users/${GUI_USER}/Downloads/*.pkg 2>/dev/null | head -n1 || true)
+
+        echo PKG=$PKG
+
+        if [ -f "$PKG" ]; then
+          sudo installer -pkg "$PKG" -target /
+        fi
+
+
+
+    - name: permission loop
+      run: |
+
+        for i in {1..20}; do
+
+          sudo -u ${GUI_USER} screencapture \
+          -x "$DEBUG_DIR/perm_$i.png" || true
+
           sleep 3
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/01_safari_open.png" || true
 
-      - name: Inject email (JS) and click Next
-        env:
-          EMAIL: ${{ secrets.GOOGLE_EMAIL }}
-        run: |
-          # Use Safari's "do JavaScript" to set the email field and click Next.
-          # This avoids unreliable "keystroke" usage.
-          JS=$(cat <<'JS'
-try {
-  var e = document.querySelector('input[type="email"], input[type="text"], input[name="identifier"]');
-  if (e) { e.focus(); e.value = "__EMAIL__"; e.dispatchEvent(new Event('input', {bubbles:true})); }
-  var btn = document.querySelector('#identifierNext, button[jsname="LgbsSe"], button[aria-label="Next"]');
-  if (btn) btn.click();
-} catch(e) { }
-JS
-)
-          # inject email into the JS (escaped)
-          JS2="${JS//__EMAIL__/${EMAIL}}"
-          # run JS in Safari as GUI user
-          sudo -u ${GUI_USER} /usr/bin/osascript -e 'tell application "Safari" to do JavaScript "'"${JS2//\"/\\\"}"'" in document 1' || true
-          sleep 3
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/02_after_email.png" || true
+        done
 
-      - name: Inject password (JS) and sign in
-        env:
-          PASS: ${{ secrets.GOOGLE_PASS }}
-        run: |
-          JS=$(cat <<'JS'
-try {
-  var p = document.querySelector('input[type="password"]');
-  if (p) { p.focus(); p.value = "__PASS__"; p.dispatchEvent(new Event('input', {bubbles:true})); }
-  // try to find and click Sign in / Next button
-  var btn = document.querySelector('#passwordNext, button[jsname="LgbsSe"], button[aria-label="Next"], button[data-id="submit"]');
-  if (btn) btn.click();
-} catch(e) { }
-JS
-)
-          JS2="${JS//__PASS__/${PASS}}"
-          sudo -u ${GUI_USER} /usr/bin/osascript -e 'tell application "Safari" to do JavaScript "'"${JS2//\"/\\\"}"'" in document 1' || true
-          sleep 4
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/03_after_password.png" || true
 
-      - name: Repeatedly screenshot while waiting for 2FA approval numbers + OCR
-        run: |
-          set -euxo pipefail
-          SECONDS_LEFT=${POLL_SECONDS}
-          INTERVAL=${POLL_INTERVAL}
-          i=0
-          echo "Polling for up to ${POLL_SECONDS}s, interval ${INTERVAL}s"
-          rm -f /tmp/google_2fa_text.txt || true
-          while [ ${SECONDS_LEFT} -gt 0 ]; do
-            i=$((i+1))
-            IMG="${DEBUG_DIR}/04_2fa_capture_${i}.png"
-            sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${IMG}" || true
-            # OCR the screenshot (best-effort)
-            if [ -x "$(which tesseract 2>/dev/null)" ]; then
-              tesseract "${IMG}" /tmp/google_2fa_text_${i} || true
-              # Append to master OCR file and print the last few lines
-              if [ -f /tmp/google_2fa_text_${i}.txt ]; then
-                cat /tmp/google_2fa_text_${i}.txt >> /tmp/google_2fa_text.txt
-                echo "---- OCR snapshot ${i} ----"
-                tail -n 60 /tmp/google_2fa_text_${i}.txt || true
-                echo "---- Extracted digit groups ----"
-                grep -Eo '[0-9]{1,4}' /tmp/google_2fa_text_${i}.txt | tr '\n' ' ' || true
-                echo
-              fi
-            else
-              echo "tesseract not installed"
-            fi
-            # check if we found candidate numbers; if yes, echo and break early (but still keep polling to capture later changes)
-            if [ -f /tmp/google_2fa_text.txt ]; then
-              NUMS=$(grep -Eo '[0-9]{1,4}' /tmp/google_2fa_text.txt | tr '\n' ' ' || true)
-              if [ -n "${NUMS// /}" ]; then
-                echo "Candidate numbers found: ${NUMS}"
-                # keep polling a few more times to capture stability
-              fi
-            fi
-            sleep ${INTERVAL}
-            SECONDS_LEFT=$((SECONDS_LEFT - INTERVAL))
-          done
-          echo "Polling done. Combined OCR saved to /tmp/google_2fa_text.txt (if any)."
-          # copy OCR file to debug for artifact
-          cp -f /tmp/google_2fa_text.txt "${DEBUG_DIR}/google_2fa_text.txt" || true
-          echo "=== Final OCR excerpt ==="
-          tail -n 200 /tmp/google_2fa_text.txt || true
 
-      - name: Pause for you to tap correct number on phone
-        run: |
-          echo "Workflow will pause for 150 seconds for you to tap the correct number on your phone."
-          sleep 150
-          echo "Resuming."
+    - name: open CRD again
+      run: |
 
-      - name: Post-2FA screenshot
-        run: |
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/05_post_2fa.png" || true
+        sudo -u ${GUI_USER} osascript \
+        -e 'tell app "Safari" to open location "'"$CRD_URL"'"'
 
-      - name: Open Chrome Remote Desktop page
-        run: |
-          sudo -u ${GUI_USER} /usr/bin/osascript -e 'tell application "Safari" to open location "'"${CRD_URL}"'"' || true
-          sleep 6
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/06_crd_page.png" || true
+        sleep 10
 
-      - name: Upload artifacts (screenshots + OCR text)
-        uses: actions/upload-artifact@v4
-        with:
-          name: safari-crd-2fa-artifacts-v2
-          path: |
-            /tmp/debug_screenshots/**
-            /tmp/google_2fa_text.txt
-          if-no-files-found: ignore
+        sudo -u ${GUI_USER} screencapture \
+        -x "$DEBUG_DIR/06_final.png"
+
+
+
+    - name: upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: crd-debug
+        path: /tmp/debug_screenshots/**
