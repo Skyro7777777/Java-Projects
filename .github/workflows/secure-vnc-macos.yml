@@ -1,340 +1,291 @@
-name: macOS GUI TeamViewer (Full Access + ID Capture)
+name: macOS GUI TeamViewer Automation
 
-on:
-  workflow_dispatch
+on: workflow_dispatch
 
 jobs:
   gui:
     runs-on: macos-latest
 
     steps:
-      # -----------------------------
-      # Prepare debug folder
-      # -----------------------------
-      - name: Prepare debug folder
-        run: mkdir -p /tmp/debug_screenshots
+    # -----------------------------
+    # Create debug dir
+    # -----------------------------
+    - name: Prepare debug folder
+      run: mkdir -p /tmp/debug_screenshots
 
-      # -----------------------------
-      # Install dependencies
-      # -----------------------------
-      - name: Install tools
-        run: |
-          brew install tesseract cliclick
-          which tesseract
-          which cliclick
+    # -----------------------------
+    # Create GUI user
+    # -----------------------------
+    - name: Create user
+      run: |
+        sudo dscl . -create /Users/vncuser
+        sudo dscl . -create /Users/vncuser UserShell /bin/bash
+        sudo dscl . -create /Users/vncuser RealName "VNC User"
+        sudo dscl . -create /Users/vncuser UniqueID 510
+        sudo dscl . -create /Users/vncuser PrimaryGroupID 20
+        sudo dscl . -create /Users/vncuser NFSHomeDirectory /Users/vncuser
+        sudo dscl . -passwd /Users/vncuser Apple@123
+        sudo dscl . -append /Groups/admin GroupMembership vncuser
+        sudo createhomedir -c -u vncuser
 
-      # -----------------------------
-      # Download and install TeamViewer 15
-      # -----------------------------
-      - name: Install TeamViewer
-        run: |
-          curl -L -o /tmp/teamviewer.dmg "https://dl.teamviewer.com/download/version_15x/TeamViewer.dmg"
-          hdiutil attach /tmp/teamviewer.dmg -mountpoint /Volumes/TeamViewer
-          sudo cp -R /Volumes/TeamViewer/TeamViewer.app /Applications/
-          hdiutil detach /Volumes/TeamViewer
+    # -----------------------------
+    # Install dependencies
+    # -----------------------------
+    - name: Install deps
+      run: |
+        brew install tesseract cliclick
 
-      # -----------------------------
-      # Pre‑grant Accessibility to the automation tools (TCC hack – may fail, but we try)
-      # -----------------------------
-      - name: Attempt to pre‑grant accessibility (experimental)
-        continue-on-error: true
-        run: |
-          USER_HOME=~
-          TCC_DB="$USER_HOME/Library/Application Support/com.apple.TCC/TCC.db"
-          if [ -f "$TCC_DB" ]; then
-            # Back up first
-            cp "$TCC_DB" /tmp/TCC.db.backup
-            # Insert entries for python3 and cliclick (if they don't exist)
-            sqlite3 "$TCC_DB" <<EOF
-            INSERT OR IGNORE INTO access (service, client, client_type, allowed, prompt_count, csreq) VALUES
-              ('kTCCServiceAccessibility', '/usr/bin/python3', 0, 1, 1, NULL),
-              ('kTCCServiceAccessibility', '/usr/local/bin/cliclick', 0, 1, 1, NULL);
-            EOF
-            echo "TCC database modified (if supported)."
-          else
-            echo "TCC database not found – skipping."
-          fi
+    # -----------------------------
+    # Install TeamViewer (Robust Version)
+    # -----------------------------
+    - name: Install TeamViewer
+      run: |
+        curl -L -o /tmp/TeamViewer.dmg "https://dl.teamviewer.com/download/version_15x/TeamViewer.dmg"
+        
+        # Attach DMG
+        hdiutil attach /tmp/TeamViewer.dmg -mountpoint /Volumes/TeamViewer -nobrowse
+        
+        # Debug: List what is inside
+        echo "Contents of DMG:"
+        ls -la /Volumes/TeamViewer/
+        
+        # Robust Copy: Find the .app recursively and copy it
+        # This handles cases where the app is inside a subfolder
+        APP_SRC=$(find /Volumes/TeamViewer -name "*.app" -type d | head -n 1)
+        
+        if [ -n "$APP_SRC" ]; then
+          echo "Found App: $APP_SRC"
+          cp -R "$APP_SRC" /Applications/
+        else
+          echo "ERROR: Could not find .app in DMG"
+          exit 1
+        fi
+        
+        # Detach
+        hdiutil detach /Volumes/TeamViewer || true
 
-      # -----------------------------
-      # Launch TeamViewer
-      # -----------------------------
-      - name: Launch TeamViewer
-        run: |
-          open /Applications/TeamViewer.app
-          sleep 10
-          screencapture -x /tmp/debug_screenshots/01_teamviewer_launch.png
+    # -----------------------------
+    # Write Visual Automation Script
+    # -----------------------------
+    - name: Write automation script
+      run: |
+        cat << 'PY' > /tmp/automate_tv.py
+        import subprocess
+        import time
+        import re
+        import os
+        import sys
 
-      # -----------------------------
-      # Write the automation script (Python + AppleScript + cliclick)
-      # -----------------------------
-      - name: Write automation script
-        run: |
-          cat << 'PY' > /tmp/grant_teamviewer.py
-          import subprocess
-          import time
-          import re
-          import pathlib
-          import sys
+        DEBUG_DIR = "/tmp/debug_screenshots"
+        USER_PASS = "Apple@123"
 
-          DEBUG = pathlib.Path("/tmp/debug_screenshots")
-          DEBUG.mkdir(exist_ok=True)
+        def run(cmd):
+            print(f"[CMD] {cmd}")
+            res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            if res.stderr: print(f"[ERR] {res.stderr}")
+            return res.stdout
 
-          def shot(name):
-              p = DEBUG / name
-              subprocess.run(f"screencapture -x {p}", shell=True)
+        def shot(name):
+            path = f"{DEBUG_DIR}/{name}"
+            subprocess.run(f"screencapture -x {path}", shell=True)
+            return path
 
-          def applescript(script):
-              """Run AppleScript and return output/error."""
-              result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
-              return result.stdout.strip(), result.returncode
+        def ocr_find_click(img_path, target_text, offset_x=0, offset_y=0, check_only=False):
+            """
+            Performs OCR, finds text, clicks center of it.
+            """
+            cmd = f"tesseract {img_path} stdout tsv"
+            res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            
+            lines = res.stdout.strip().split('\n')
+            if len(lines) < 2: return False
 
-          def click_button_by_name(button_name, window_title=None, process="TeamViewer"):
-              """Try to click a button using AppleScript GUI scripting."""
-              script = f'''
-              tell application "System Events"
-                  tell process "{process}"
-                      set frontmost to true
-                      if exists window 1 then
-                          repeat with w in windows
-                              if {('title of w contains "'+window_title+'"') if window_title else 'true'} then
-                                  try
-                                      set btn to button "{button_name}" of w
-                                      if exists btn then
-                                          click btn
-                                          return "clicked"
-                                      end if
-                                  end try
-                              end if
-                          end repeat
-                      end if
-                  end tell
-              end tell
-              return "not found"
-              '''
-              out, code = applescript(script)
-              return "clicked" in out
+            keys = lines[0].split('\t')
+            
+            for line in lines[1:]:
+                vals = line.split('\t')
+                if len(vals) != len(keys): continue
+                
+                entry = dict(zip(keys, vals))
+                text = entry.get('text', '').strip()
+                
+                if target_text.lower() in text.lower():
+                    left = int(entry['left'])
+                    top = int(entry['top'])
+                    width = int(entry['width'])
+                    height = int(entry['height'])
+                    
+                    cx = left + width // 2
+                    cy = top + height // 2
+                    
+                    final_x = cx + offset_x
+                    final_y = cy + offset_y
+                    
+                    print(f"[OCR] Found '{text}' at ({left},{top}). Clicking ({final_x},{final_y})")
+                    
+                    if not check_only:
+                        subprocess.run(f"cliclick c:{final_x},{final_y}", shell=True)
+                        time.sleep(1)
+                    return True
+            return False
 
-          def click_at_text_fallback(text, region=None):
-              """
-              Use OCR to find text on screen and click its center.
-              Requires tesseract and cliclick.
-              """
-              shot("ocr_temp.png")
-              # Run tesseract with bounding box info
-              subprocess.run("tesseract /tmp/debug_screenshots/ocr_temp.png stdout -c tessedit_create_boxfile=1 /tmp/ocr_box", shell=True)
-              # Parse box file (format: char left bottom right top page)
-              boxes = []
-              try:
-                  with open("/tmp/ocr_box.txt") as f:
-                      for line in f:
-                          parts = line.split()
-                          if len(parts) >= 6 and text.lower() in parts[0].lower():
-                              left, bottom, right, top = map(int, parts[1:5])
-                              # Convert bottom-left to screen coordinates (y from top)
-                              # Assume screen height 1600 (typical runner) – adjust if needed
-                              screen_height = 1600  # we'll capture actual later
-                              x_center = (left + right) // 2
-                              y_center = screen_height - ((bottom + top) // 2)  # approximate
-                              boxes.append((x_center, y_center))
-              except:
-                  pass
-              if boxes:
-                  x, y = boxes[0]
-                  subprocess.run(f"cliclick c:{x},{y}", shell=True)
-                  return True
-              return False
+        def wait_and_click(target_text, timeout=15, offset_x=0, offset_y=0):
+            print(f"[WAIT] Looking for '{target_text}'...")
+            start = time.time()
+            while time.time() - start < timeout:
+                img = shot(f"wait_{target_text.replace(' ','_')}.png")
+                if ocr_find_click(img, target_text, offset_x, offset_y):
+                    return True
+                time.sleep(1)
+            print(f"[FAIL] Timeout waiting for '{target_text}'")
+            return False
 
-          # ------------------------------------------------------------------
-          # Main automation sequence
-          # ------------------------------------------------------------------
-          shot("02_start.png")
-          time.sleep(5)
+        def handle_permission_workflow(permission_name):
+            """
+            Flow: Click 'Request Access' -> Click 'Open System Settings' -> Toggle -> Handle Password
+            """
+            print(f"--- Handling {permission_name} ---")
+            
+            # 1. Click Request Access
+            if not wait_and_click("Request Access", timeout=10):
+                print("Could not find Request Access button, checking status...")
+                return
 
-          # ---- Step 1: Initial "How do you want to use TeamViewer?" ----
-          # Try to select "free version for personal use" (usually first option)
-          # Use arrow keys + Enter as fallback
-          def select_free_version():
-              # First try clicking the radio button text via AppleScript
-              if click_button_by_name("I want to use the free version for personal use", process="TeamViewer"):
-                  return True
-              # Fallback: send down arrow + enter
-              subprocess.run("cliclick kp:arrow-down kp:enter", shell=True)
-              time.sleep(1)
-              return True
+            time.sleep(2)
+            shot(f"perm_{permission_name}_popup.png")
 
-          select_free_version()
-          time.sleep(2)
-          shot("03_free_selected.png")
+            # 2. Handle System Popup
+            if wait_and_click("Open System Settings", timeout=5):
+                time.sleep(3) 
+                
+                # 3. System Settings Interaction
+                run("osascript -e 'tell application \"System Settings\" to activate'")
+                time.sleep(2)
+                
+                # Search for "Screen Recording" or "Accessibility" to filter list
+                # This is more reliable than scrolling
+                # We need to hit Cmd+F in settings or use the search bar
+                # Let's try typing the permission name into the search field
+                run("osascript -e 'tell application \"System Events\" to keystroke \"f\" using {command down}'") # Cmd+F
+                time.sleep(1)
+                
+                search_img = shot(f"perm_{permission_name}_search.png")
+                # Click search field (usually top right, but let's try to find 'Search' text if needed, or just type)
+                
+                # Type permission name to filter
+                run(f"osascript -e 'tell application \"System Events\" to keystroke \"{permission_name}\"'")
+                time.sleep(2)
+                
+                # Now find TeamViewer in the filtered list
+                settings_img = shot(f"perm_{permission_name}_settings.png")
+                if ocr_find_click(settings_img, "TeamViewer", offset_x=200, offset_y=0):
+                    pass # Clicked toggle
+                else:
+                    # Fallback: sometimes it's just a list item
+                    # Try just finding TeamViewer generally
+                    ocr_find_click(settings_img, "TeamViewer", offset_x=200, offset_y=0)
 
-          # Click Continue
-          if not click_button_by_name("Continue", process="TeamViewer"):
-              click_at_text_fallback("Continue")
-          time.sleep(3)
-          shot("04_after_continue.png")
+                time.sleep(1)
+                
+                # 4. Handle Authentication Prompt
+                auth_img = shot(f"perm_{permission_name}_auth.png")
+                # Check for password field existence (text 'Password')
+                if ocr_find_click(auth_img, "Password", check_only=True):
+                     print("Auth prompt detected.")
+                     # Click password field (usually auto-focused)
+                     # Type password
+                     subprocess.run(f"cliclick t:{USER_PASS}", shell=True)
+                     time.sleep(0.5)
+                     subprocess.run("cliclick kp:enter", shell=True)
+                     print("Password entered.")
+                     time.sleep(2)
 
-          # ---- Step 2: Review System Access panel ----
-          # Wait for it to appear
-          time.sleep(5)
+                # 5. Close Settings
+                run("osascript -e 'tell application \"System Settings\" to quit'")
+                time.sleep(1)
+                
+                # Back to TeamViewer
+                run("osascript -e 'tell application \"TeamViewer\" to activate'")
+                time.sleep(1)
+            else:
+                print("System popup not found.")
 
-          # Helper to handle a permission request button
-          def grant_permission(button_text, pref_pane, item_name):
-              """Click 'Request Access...' or 'Open Full Disk Access Preferences...', then toggle in System Preferences."""
-              shot(f"05_before_{button_text}.png")
-              if not click_button_by_name(button_text, process="TeamViewer"):
-                  click_at_text_fallback(button_text)
-              time.sleep(3)
+        # ---------------------------
+        # MAIN EXECUTION
+        # ---------------------------
+        
+        print("Launching TeamViewer...")
+        run("sudo -u vncuser open /Applications/TeamViewer.app")
+        time.sleep(10) 
+        
+        shot("01_launch.png")
+        
+        # Initial Setup
+        # We assume the window appears. We look for the specific text "How do you want"
+        # If the window is different, this might fail, but we have screenshots.
+        if ocr_find_click(shot("02_wizard.png"), "How do you want to use"):
+            print("Setup Wizard detected.")
+            # Click "personal use"
+            wait_and_click("personal use", timeout=5)
+            time.sleep(1)
+            wait_and_click("Continue", timeout=5)
+            time.sleep(2)
+            # Accept License
+            wait_and_click("Continue", timeout=5) 
+            wait_and_click("Finish", timeout=5)
+            time.sleep(3)
+        
+        # Permissions
+        print("Handling Permissions...")
+        shot("03_main_window.png")
 
-              # System Preferences should open. Wait for it.
-              shot(f"06_sysprefs_{button_text}.png")
-              time.sleep(3)
+        if ocr_find_click(shot("04_permissions_panel.png"), "Review System Access", check_only=True):
+            # Screen Recording
+            handle_permission_workflow("Screen Recording")
+            time.sleep(2)
+            # Accessibility
+            handle_permission_workflow("Accessibility")
 
-              # For Screen Recording and Accessibility, we need to check the checkbox next to TeamViewer.
-              # For Full Disk Access, it's also a checkbox.
-              # Use AppleScript to click the checkbox if possible.
-              toggle_script = f'''
-              tell application "System Events"
-                  tell process "System Settings"  -- or "System Preferences" on older macOS
-                      set frontmost to true
-                      -- Try to find the table containing app names
-                      repeat with uiElement in entire contents
-                          if role of uiElement is "AXCheckBox" and value of uiElement is 0 then
-                              try
-                                  -- Check if the static text beside it contains "TeamViewer"
-                                  set parentRow to (value of attribute "AXParent" of uiElement)
-                                  if parentRow is not missing value then
-                                      set staticTexts to (every static text of parentRow)
-                                      repeat with txt in staticTexts
-                                          if value of txt contains "{item_name}" then
-                                              click uiElement
-                                              return "toggled"
-                                          end if
-                                      end repeat
-                                  end if
-                              end try
-                          end if
-                      end repeat
-                  end tell
-              end tell
-              return "not found"
-              '''
-              out, _ = applescript(toggle_script)
-              if "toggled" not in out:
-                  # Fallback: OCR to find checkbox near "TeamViewer"
-                  click_at_text_fallback("TeamViewer")
-                  # Then try to click a little to the left (checkbox area)
-                  subprocess.run("cliclick c:-30,0", shell=True)  # crude offset
-              time.sleep(2)
-              shot(f"07_toggled_{button_text}.png")
+            wait_and_click("Close", timeout=3)
 
-              # Close System Preferences
-              subprocess.run("osascript -e 'tell application \"System Settings\" to quit'", shell=True)
-              time.sleep(1)
+        # Extract Info
+        print("Extracting ID and Password...")
+        time.sleep(5)
+        final_shot = shot("10_final.png")
+        
+        cmd = f"tesseract {final_shot} stdout"
+        res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        text = res.stdout
+        print("=== OCR OUTPUT ===")
+        print(text)
+        
+        with open("/tmp/connection_info.txt", "w") as f:
+            f.write(text)
 
-          # Screen Recording
-          grant_permission("Request Access...", "Privacy_ScreenRecording", "TeamViewer")
-          # Back to TeamViewer, wait
-          time.sleep(3)
+        PY
 
-          # Accessibility
-          grant_permission("Request Access...", "Privacy_Accessibility", "TeamViewer")
-          time.sleep(3)
+    # -----------------------------
+    # Run Automation
+    # -----------------------------
+    - name: Run Automation
+      continue-on-error: true
+      run: |
+        sudo -u vncuser python3 /tmp/automate_tv.py
 
-          # Full Disk Access (button is different)
-          shot("08_before_full_disk.png")
-          click_button_by_name("Open Full Disk Access Preferences...", process="TeamViewer")
-          time.sleep(4)
-          # In Full Disk Access list, find TeamViewer and check it
-          toggle_full_script = '''
-          tell application "System Events"
-              tell process "System Settings"
-                  set frontmost to true
-                  repeat with uiElement in entire contents
-                      if role of uiElement is "AXCheckBox" and value of uiElement is 0 then
-                          try
-                              set parentRow to (value of attribute "AXParent" of uiElement)
-                              if parentRow is not missing value then
-                                  set staticTexts to (every static text of parentRow)
-                                  repeat with txt in staticTexts
-                                      if value of txt contains "TeamViewer" then
-                                          click uiElement
-                                          return "toggled"
-                                      end if
-                                  end repeat
-                              end if
-                          end try
-                      end if
-                  end repeat
-              end tell
-          end tell
-          '''
-          out, _ = applescript(toggle_full_script)
-          if "toggled" not in out:
-              click_at_text_fallback("TeamViewer")
-              subprocess.run("cliclick c:-30,0", shell=True)
-          time.sleep(2)
-          shot("09_full_disk_toggled.png")
-          subprocess.run("osascript -e 'tell application \"System Settings\" to quit'", shell=True)
+    # -----------------------------
+    # Upload Artifacts
+    # -----------------------------
+    - name: Upload Screenshots
+      uses: actions/upload-artifact@v4
+      with:
+        name: debug-visuals
+        path: /tmp/debug_screenshots/
 
-          # ---- Step 3: Back to TeamViewer, click Close ----
-          time.sleep(3)
-          click_button_by_name("Close", process="TeamViewer") or click_at_text_fallback("Close")
-          shot("10_after_close.png")
+    - name: Upload Connection Info
+      uses: actions/upload-artifact@v4
+      with:
+        name: connection-info
+        path: /tmp/connection_info.txt
 
-          # ---- Step 4: Extract ID and password via OCR ----
-          time.sleep(5)
-          shot("11_main_window.png")
-          # Capture area where ID/password appear (rough rectangle)
-          subprocess.run("screencapture -R 200,300,800,300 /tmp/teamviewer_id.png", shell=True)
-          subprocess.run("tesseract /tmp/teamviewer_id.png /tmp/teamviewer_ocr 2>/dev/null", shell=True)
-          with open("/tmp/teamviewer_ocr.txt", "r") as f:
-              ocr_text = f.read()
-          print("=== TEAMVIEWER OCR OUTPUT ===")
-          print(ocr_text)
-          print("==============================")
-
-          # Try to find ID (9-10 digits) and password (4 digits)
-          id_match = re.search(r'\b(\d{9,10})\b', ocr_text)
-          pw_match = re.search(r'\b(\d{4})\b', ocr_text)
-          if id_match:
-              print(f"TeamViewer ID: {id_match.group(1)}")
-          if pw_match:
-              print(f"Password: {pw_match.group(1)}")
-
-          shot("12_final.png")
-          PY
-
-      # -----------------------------
-      # Run the automation script
-      # -----------------------------
-      - name: Run TeamViewer automation
-        continue-on-error: true
-        run: |
-          python3 /tmp/grant_teamviewer.py
-
-      # -----------------------------
-      # Capture final screen and upload artifacts
-      # -----------------------------
-      - name: Capture final screen
-        run: |
-          screencapture -x /tmp/debug_screenshots/13_final_full.png
-
-      - name: Upload all screenshots
-        uses: actions/upload-artifact@v4
-        with:
-          name: teamviewer-debug-screenshots
-          path: /tmp/debug_screenshots/
-
-      - name: Upload OCR result
-        uses: actions/upload-artifact@v4
-        with:
-          name: teamviewer-ocr
-          path: /tmp/teamviewer_ocr.txt
-
-      # -----------------------------
-      # Keep runner alive for connection
-      # -----------------------------
-      - name: Keep alive
-        run: |
-          echo "TeamViewer setup completed. Connect using the ID above."
-          echo "Runner will stay alive for 6 hours. Press Ctrl+C to stop."
-          while true; do sleep 3600; done
+    - name: Keep Alive
+      run: echo "Done"
