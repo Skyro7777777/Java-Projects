@@ -10,7 +10,7 @@ jobs:
       GUI_PASS: Apple@123
       DEBUG_DIR: /tmp/debug_screenshots
       RUSTDESK_DMG_URL: https://github.com/rustdesk/rustdesk/releases/download/1.4.6/rustdesk-1.4.6-x86_64.dmg
-      SCRIPT_URL: "YOUR_RAW_SCRIPT_URL_HERE"
+      SCRIPT_URL: "https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/grant__screen_recording.py"
 
     steps:
       - name: Prepare debug folder (writable)
