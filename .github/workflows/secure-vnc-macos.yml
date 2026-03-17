@@ -1,5 +1,4 @@
 name: macOS GUI RustDesk (with external script + screenshots)
-
 on: workflow_dispatch
 
 jobs:
@@ -94,6 +93,26 @@ jobs:
           sleep 1
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/10_after_extra_clicks.png" || true
 
+      - name: Download diagnostic AppleScript and run (dump RustDesk UI)
+        run: |
+          # download the script from your GitHub raw URL
+          curl -fsSL "https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/dump_rustdesk_ui.scpt" -o /tmp/dump_rustdesk_ui.scpt
+
+          # set ownership and permissions
+          sudo chown ${GUI_USER}:staff /tmp/dump_rustdesk_ui.scpt || true
+          chmod 755 /tmp/dump_rustdesk_ui.scpt || true
+
+          # run as GUI user so accessibility sees the GUI session
+          sudo -u ${GUI_USER} /usr/bin/osascript /tmp/dump_rustdesk_ui.scpt || true
+          sleep 0.6
+
+          # capture screenshot
+          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/after_dump_ui.png" || true
+
+          # show the written text file (for logs)
+          echo "----- /tmp/rustdesk_ui.txt -----"
+          sudo -u ${GUI_USER} /bin/cat /tmp/rustdesk_ui.txt || true
+
       - name: Capture final RustDesk screenshot as GUI user
         run: |
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x /tmp/rustdesk.png || true
@@ -112,9 +131,11 @@ jobs:
           path: |
             /tmp/debug_screenshots/**
             /tmp/rustdesk.png
+            /tmp/rustdesk_ui.txt
           if-no-files-found: ignore
 
       - name: Keep runner alive (manual debug window)
         run: |
           echo "Runner will remain alive for manual debugging (6 hours). Download artifacts first."
           for i in {1..6}; do echo "sleeping $i"; sleep 3600; done
+
