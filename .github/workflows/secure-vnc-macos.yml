@@ -1,152 +1,151 @@
-name: AnyDesk macOS — use external AppleScript to clear popups + unattended
+name: AnyDesk macOS FULL popup fix + permissions + unattended
 
 on: workflow_dispatch
 
 jobs:
   gui:
     runs-on: macos-latest
+
     env:
       GUI_USER: vncuser
       GUI_PASS: Apple@123
       DEBUG_DIR: /tmp/debug_screenshots
-      ANYDESK_DMG_URL: "https://download.anydesk.com/anydesk.dmg"
-      APPLESCRIPT_URL: "https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/clear_popups.applescript"   # <- put the raw URL to clear_popups.applescript
-      SCRIPT_URL: "https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/grant__screen_recording.py"      # <- optional: put the raw URL to grant_screen_recording.py
-      UNATTENDED_PASSWORD: "Apple@123"
+      ANYDESK_DMG_URL: https://download.anydesk.com/anydesk.dmg
+      APPLESCRIPT_URL: "PUT_RAW_URL_HERE"
+      UNATTENDED_PASSWORD: Apple@123
 
     steps:
+
       - name: Prepare debug folder
         run: |
           mkdir -p "${DEBUG_DIR}"
           chmod 777 "${DEBUG_DIR}"
 
-      - name: Create GUI user (vncuser) and chown debug dir
+
+      - name: Create GUI user
         run: |
           if ! id -u "${GUI_USER}" >/dev/null 2>&1; then
             sudo dscl . -create /Users/${GUI_USER}
             sudo dscl . -create /Users/${GUI_USER} UserShell /bin/bash
-            sudo dscl . -create /Users/${GUI_USER} RealName "VNC User"
-            sudo dscl . -create /Users/${GUI_USER} UniqueID "510"
+            sudo dscl . -create /Users/${GUI_USER} RealName "GUI User"
+            sudo dscl . -create /Users/${GUI_USER} UniqueID 510
             sudo dscl . -create /Users/${GUI_USER} PrimaryGroupID 20
             sudo dscl . -create /Users/${GUI_USER} NFSHomeDirectory /Users/${GUI_USER}
             sudo dscl . -passwd /Users/${GUI_USER} "${GUI_PASS}"
             sudo dscl . -append /Groups/admin GroupMembership ${GUI_USER}
-            sudo createhomedir -c -u ${GUI_USER} >/dev/null 2>&1 || true
+            sudo createhomedir -c -u ${GUI_USER} || true
           fi
+
           sudo chown -R ${GUI_USER}:staff "${DEBUG_DIR}"
-          chmod -R 777 "${DEBUG_DIR}"
 
-      - name: Install optional tools (tesseract, cliclick)
-        run: |
-          brew install tesseract cliclick || true
 
-      - name: Download & Install AnyDesk (portable DMG)
+      - name: Install tools
         run: |
-          set -euxo pipefail
+          brew install cliclick tesseract || true
+
+
+      - name: Install AnyDesk
+        run: |
           curl -L -o /tmp/anydesk.dmg "${ANYDESK_DMG_URL}"
-          hdiutil attach /tmp/anydesk.dmg -mountpoint /Volumes/AnyDesk -nobrowse || true
-          cp -R "/Volumes/AnyDesk/AnyDesk.app" /Applications/ || true
-          hdiutil detach "/Volumes/AnyDesk" || true
-          ls -l /Applications/AnyDesk.app || true
 
-      - name: Download & run external AppleScript (safe)
-  run: |
-    if [ -z "${APPLESCRIPT_URL}" ] || [ "${APPLESCRIPT_URL}" = "YOUR_RAW_APPLESCRIPT_URL_HERE" ]; then
-      echo "ERROR: Set APPLESCRIPT_URL to the raw URL of clear_popups.applescript"; exit 1
-    fi
+          hdiutil attach /tmp/anydesk.dmg -mountpoint /Volumes/AnyDesk || true
 
-    # fetch script to /tmp (overwrite if exists)
-    curl -fsSL "${APPLESCRIPT_URL}" -o /tmp/clear_popups.applescript || { echo "curl failed"; exit 1; }
+          cp -R "/Volumes/AnyDesk/AnyDesk.app" /Applications/
 
-    # run it as the GUI user (osascript reads the file; execute bit not required)
-    sudo -u ${GUI_USER} /usr/bin/osascript /tmp/clear_popups.applescript || true
+          hdiutil detach /Volumes/AnyDesk || true
 
-    # keep a copy for debugging (owned by GUI_USER so you can inspect it in artifacts)
-    sudo -u ${GUI_USER} cp /tmp/clear_popups.applescript "${DEBUG_DIR}/clear_popups.applescript" || true
 
-    # screenshot after attempting clears
-    sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/00_after_clear_popups.png" || true
-      - name: Run AppleScript as GUI user (clear popups)
+      - name: Screenshot before launch
         run: |
-          # run as GUI user so the script can access windows/sheets of that user
-          sudo -u ${GUI_USER} /usr/bin/osascript /tmp/clear_popups.applescript || true
-          sleep 1
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/00_after_clear_popups.png" || true
+          sudo -u ${GUI_USER} screencapture -x "${DEBUG_DIR}/00_before.png" || true
 
-      - name: Launch AnyDesk GUI (so the app triggers its permission dialog)
+
+      - name: Launch AnyDesk
         run: |
           sudo -u ${GUI_USER} open -a "/Applications/AnyDesk.app" || true
           sleep 6
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/01_after_launch.png" || true
 
-      - name: Run AppleScript again (clear any new modal that appeared)
-        run: |
-          sudo -u ${GUI_USER} /usr/bin/osascript /tmp/clear_popups.applescript || true
-          sleep 1
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/02_after_second_clear.png" || true
+          sudo -u ${GUI_USER} screencapture -x "${DEBUG_DIR}/01_after_launch.png" || true
 
-      - name: (optional) download & run python grant script as GUI user if you have one
-        if: ${{ env.SCRIPT_URL != '' && env.SCRIPT_URL != 'YOUR_RAW_PYTHON_SCRIPT_URL_HERE' }}
-        run: |
-          curl -fsSL "${SCRIPT_URL}" -o /tmp/grant_screen_recording.py || true
-          sudo chown ${GUI_USER}:staff /tmp/grant_screen_recording.py || true
-          chmod +x /tmp/grant_screen_recording.py || true
-          sudo -u ${GUI_USER} env PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin" python3 /tmp/grant_screen_recording.py || true
-          sleep 1
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/03_after_python_grant.png" || true
 
-      - name: Start AnyDesk service + set password (robust)
+      - name: Clear popups using RAW AppleScript
         run: |
-          set -euxo pipefail
-          APP="/Applications/AnyDesk.app"
-          # find the executable
-          AD_BIN=$(find "${APP}/Contents/MacOS" -type f -perm +111 2>/dev/null | head -n1 || true)
-          echo "AnyDesk binary: ${AD_BIN}"
-          if [ -z "${AD_BIN}" ] || [ ! -x "${AD_BIN}" ]; then
-            echo "ERROR: AnyDesk executable not found"; ls -l "${APP}/Contents/MacOS" || true; exit 1
+
+          if [ -z "${APPLESCRIPT_URL}" ]; then
+            echo "NO APPLESCRIPT URL"
+            exit 1
           fi
-          SERVICE_LOG="/tmp/anydesk_service.log"
+
+          curl -fsSL "${APPLESCRIPT_URL}" | sudo -u ${GUI_USER} osascript - || true
+
+          sleep 2
+
+          sudo -u ${GUI_USER} screencapture -x "${DEBUG_DIR}/02_after_popup_clear.png" || true
+
+
+      - name: Clear popups again (second pass)
+        run: |
+
+          curl -fsSL "${APPLESCRIPT_URL}" | sudo -u ${GUI_USER} osascript - || true
+
+          sleep 2
+
+          sudo -u ${GUI_USER} screencapture -x "${DEBUG_DIR}/03_after_popup_clear2.png" || true
+
+
+      - name: Find AnyDesk binary
+        run: |
+
+          BIN=$(find /Applications/AnyDesk.app/Contents/MacOS -type f | head -n1)
+
+          echo "BIN=$BIN" >> $GITHUB_ENV
+
+          echo "$BIN"
+
+
+      - name: Start AnyDesk service
+        run: |
+
+          echo "Binary = $BIN"
+
           pkill -f AnyDesk || true
-          sleep 1
-          sudo env PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin" "${AD_BIN}" --service > "${SERVICE_LOG}" 2>&1 &
-          # poll for readiness
-          READY=0
-          for i in $(seq 1 30); do
-            sleep 1
-            if sudo "${AD_BIN}" --get-id >/tmp/anydesk_id.out 2>/tmp/anydesk_err.out; then READY=1; break; fi
-          done
-          if [ "${READY}" -ne 1 ]; then
-            echo "Service not ready; collecting logs"
-            tail -n 200 "${SERVICE_LOG}" || true
-            cat /tmp/anydesk_err.out || true
-          fi
-          # attempt to set password
-          SET_OK=0
-          for j in $(seq 1 6); do
-            if echo "${UNATTENDED_PASSWORD}" | sudo "${AD_BIN}" --set-password >/tmp/anydesk_setpw_out 2>/tmp/anydesk_setpw_err; then SET_OK=1; break; fi
+          sleep 2
+
+          sudo "$BIN" --service > /tmp/anydesk_service.log 2>&1 &
+
+          sleep 5
+
+          sudo "$BIN" --get-id > /tmp/anydesk_id.txt 2>&1 || true
+
+
+      - name: Set unattended password
+        run: |
+
+          for i in {1..6}
+          do
+            echo "$UNATTENDED_PASSWORD" | sudo "$BIN" --set-password && break
             sleep 2
           done
-          cp -f "${SERVICE_LOG}" "${DEBUG_DIR}/anydesk_service.log" || true
-          cp -f /tmp/anydesk_id.out "${DEBUG_DIR}/anydesk_id.out" || true
-          cp -f /tmp/anydesk_err.out "${DEBUG_DIR}/anydesk_err.out" || true
-          cp -f /tmp/anydesk_setpw_err "${DEBUG_DIR}/anydesk_setpw_err" || true
-          cp -f /tmp/anydesk_setpw_out "${DEBUG_DIR}/anydesk_setpw_out" || true
-          sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/04_after_service_and_setpw.png" || true
+
+          sudo -u ${GUI_USER} screencapture -x "${DEBUG_DIR}/04_after_password.png" || true
+
+
+      - name: Final screenshot
+        run: |
+          sudo -u ${GUI_USER} screencapture -x "${DEBUG_DIR}/05_final.png" || true
+
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: anydesk-debug-artifacts
+          name: anydesk-debug
           path: |
             /tmp/debug_screenshots/**
             /tmp/anydesk_service.log
-            /tmp/anydesk_id.out
-            /tmp/anydesk_err.out
-            /tmp/anydesk_setpw_err
-            /tmp/anydesk_setpw_out
-          if-no-files-found: ignore
+            /tmp/anydesk_id.txt
 
-      - name: Keep alive (short)
+
+      - name: Keep runner alive
         run: |
-          echo "Sleeping for 10 minutes so you can grab artifacts."
+          echo "Runner alive 10 min"
           sleep 600
