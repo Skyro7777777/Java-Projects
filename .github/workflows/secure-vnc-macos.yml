@@ -9,7 +9,7 @@ jobs:
       GUI_USER: vncuser
       GUI_PASS: Apple@123
       DEBUG_DIR: /tmp/debug_screenshots
-      ANYDESK_PKG_URL: "https://download.anydesk.com/anydesk.pkg"
+      ANYDESK_DMG_URL: "https://download.anydesk.com/anydesk.dmg"
       SCRIPT_URL: "https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/grant__screen_recording.py"
       UNATTENDED_PASSWORD: "Apple@123"
 
@@ -39,11 +39,18 @@ jobs:
         run: |
           brew install tesseract cliclick || true
 
-      - name: Download & Install AnyDesk (full .pkg with service)
+      - name: Download & Install AnyDesk (portable DMG)
         run: |
-          curl -L -o /tmp/anydesk.pkg "${ANYDESK_PKG_URL}"
-          sudo installer -pkg /tmp/anydesk.pkg -target /
-          echo "AnyDesk installed via full pkg (service registered)"
+          curl -L -o /tmp/anydesk.dmg "${ANYDESK_DMG_URL}"
+          hdiutil attach /tmp/anydesk.dmg -mountpoint /Volumes/AnyDesk -nobrowse || true
+          cp -R "/Volumes/AnyDesk/AnyDesk.app" /Applications/ || true
+          hdiutil detach "/Volumes/AnyDesk" || true
+          echo "AnyDesk installed from DMG"
+
+      - name: Install AnyDesk service (required for unattended password)
+        run: |
+          sudo /Applications/AnyDesk.app/Contents/MacOS/AnyDesk --install-service || true
+          echo "AnyDesk service installed"
 
       - name: Reset TCC + launch AnyDesk
         run: |
@@ -65,12 +72,10 @@ jobs:
 
       - name: Enable Unattended Access (password Apple@123)
         run: |
-          # Ensure service is running
           sudo -u ${GUI_USER} killall AnyDesk || true
           sleep 5
           sudo -u ${GUI_USER} open -a "/Applications/AnyDesk.app" || true
-          sleep 20   # longer wait for daemon
-          # Set password (official CLI)
+          sleep 20   # wait for service to start after --install-service
           echo "${UNATTENDED_PASSWORD}" | sudo /Applications/AnyDesk.app/Contents/MacOS/AnyDesk --set-password
           echo "Unattended password set to: ${UNATTENDED_PASSWORD}"
           sudo -u ${GUI_USER} /usr/sbin/screencapture -x "${DEBUG_DIR}/12_unattended_enabled.png" || true
