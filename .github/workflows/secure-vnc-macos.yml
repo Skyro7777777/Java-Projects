@@ -1,10 +1,10 @@
-name: macOS RustDesk Debug (clean)
+name: macOS RustDesk — validate external scripts & dump UI
 
 on:
   workflow_dispatch:
 
 jobs:
-  run:
+  gui:
     runs-on: macos-latest
 
     env:
@@ -13,76 +13,116 @@ jobs:
       DEBUG_DIR: /tmp/debug_screenshots
       PY_SCRIPT_URL: https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/grant__screen_recording.py
       DUMP_SCPT_URL: https://raw.githubusercontent.com/Skyro7777777/Java-Projects/refs/heads/main/dump_rustdesk_ui.scpt
+      RUSTDESK_DMG_URL: https://github.com/rustdesk/rustdesk/releases/download/1.4.6/rustdesk-1.4.6-x86_64.dmg
 
     steps:
       - name: Prepare debug folder
         run: |
           mkdir -p "$DEBUG_DIR"
           chmod 777 "$DEBUG_DIR"
+          ls -ld "$DEBUG_DIR"
 
-      - name: Create GUI user
+      - name: Ensure GUI user exists and own debug dir
         run: |
           if ! id -u "$GUI_USER" >/dev/null 2>&1; then
             sudo sysadminctl -addUser "$GUI_USER" -password "$GUI_PASS" || true
           fi
           sudo chown -R "$GUI_USER":staff "$DEBUG_DIR"
+          chmod -R 777 "$DEBUG_DIR"
+          id "$GUI_USER" || true
 
-      - name: Install tools
+      - name: Install (optional) tools
         run: |
           brew install cliclick tesseract || true
+          echo "cliclick=$(which cliclick || true) tesseract=$(which tesseract || true)"
 
       - name: Install RustDesk
         run: |
-          curl -L -o /tmp/rustdesk.dmg https://github.com/rustdesk/rustdesk/releases/download/1.4.6/rustdesk-1.4.6-x86_64.dmg
-          hdiutil attach /tmp/rustdesk.dmg -mountpoint /Volumes/RustDesk || true
-          cp -R "/Volumes/RustDesk/RustDesk.app" /Applications/
-          hdiutil detach /Volumes/RustDesk || true
+          curl -L -o /tmp/rustdesk.dmg "$RUSTDESK_DMG_URL"
+          hdiutil attach /tmp/rustdesk.dmg -mountpoint /Volumes/RustDesk -nobrowse || true
+          cp -R "/Volumes/RustDesk/RustDesk.app" /Applications/ || true
+          hdiutil detach "/Volumes/RustDesk" || true
+          ls -ld /Applications/RustDesk.app || true
 
-      - name: Launch RustDesk
+      - name: Launch RustDesk (GUI) and screenshot
         run: |
-          sudo -u "$GUI_USER" open -a /Applications/RustDesk.app
+          sudo -u "$GUI_USER" open -a /Applications/RustDesk.app || true
           sleep 12
-          sudo -u "$GUI_USER" screencapture -x "$DEBUG_DIR/01_launch.png" || true
+          sudo -u "$GUI_USER" /usr/sbin/screencapture -x "$DEBUG_DIR/01_after_launch.png" || true
 
-      - name: Download Python script
+      - name: Download external Python script (validate content)
         run: |
-          curl -L "$PY_SCRIPT_URL" -o /tmp/grant.py
-          chmod +x /tmp/grant.py
-          sudo chown "$GUI_USER":staff /tmp/grant.py
+          echo "Downloading PY script from: $PY_SCRIPT_URL"
+          curl -fsSL "$PY_SCRIPT_URL" -o /tmp/grant.py || true
+          sudo chown "$GUI_USER":staff /tmp/grant.py || true
+          chmod +x /tmp/grant.py || true
+          echo "---- /tmp/grant.py head (first 40 lines) ----" > /tmp/grant_download_head.txt
+          head -n 40 /tmp/grant.py >> /tmp/grant_download_head.txt 2>&1 || true
+          echo "---- /tmp/grant.py stat ----" >> /tmp/grant_download_head.txt
+          stat -f "%N %z bytes" /tmp/grant.py >> /tmp/grant_download_head.txt 2>&1 || true
+          echo "Saved grant_download_head.txt"
 
-      - name: Run Python automation
+      - name: Run external Python automation (capture logs)
         continue-on-error: true
         run: |
-          sudo -u "$GUI_USER" env PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
-            python3 /tmp/grant.py || true
+          echo "Running /tmp/grant.py as $GUI_USER..."
+          sudo -u "$GUI_USER" env PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin" \
+            bash -c 'python3 /tmp/grant.py' > /tmp/grant_run_stdout.txt 2> /tmp/grant_run_stderr.txt || true
+          echo "python stdout (first 120 lines):"
+          head -n 120 /tmp/grant_run_stdout.txt || true
+          echo "python stderr (first 120 lines):"
+          head -n 120 /tmp/grant_run_stderr.txt || true
+          sudo -u "$GUI_USER" /usr/sbin/screencapture -x "$DEBUG_DIR/02_after_python.png" || true
 
-          sleep 2
-          sudo -u "$GUI_USER" screencapture -x "$DEBUG_DIR/02_after_python.png" || true
-
-      - name: Download AppleScript (external only)
+      - name: Download external AppleScript (validate content)
         run: |
-          curl -L "$DUMP_SCPT_URL" -o /tmp/dump.scpt
-          chmod +x /tmp/dump.scpt
-          sudo chown "$GUI_USER":staff /tmp/dump.scpt
+          echo "Downloading AppleScript from: $DUMP_SCPT_URL"
+          curl -fsSL "$DUMP_SCPT_URL" -o /tmp/dump.scpt || true
+          sudo chown "$GUI_USER":staff /tmp/dump.scpt || true
+          chmod 755 /tmp/dump.scpt || true
+          echo "---- /tmp/dump.scpt head (first 40 lines) ----" > /tmp/dump_download_head.txt
+          head -n 40 /tmp/dump.scpt >> /tmp/dump_download_head.txt 2>&1 || true
+          stat -f "%N %z bytes" /tmp/dump.scpt >> /tmp/dump_download_head.txt 2>&1 || true
+          echo "Saved dump_download_head.txt"
 
-      - name: Run AppleScript dump
+      - name: Run AppleScript diagnostic (capture stdout/stderr)
         continue-on-error: true
         run: |
-          sudo -u "$GUI_USER" osascript /tmp/dump.scpt || true
-          sleep 1
-          sudo -u "$GUI_USER" screencapture -x "$DEBUG_DIR/03_after_dump.png" || true
+          echo "Running /tmp/dump.scpt as $GUI_USER..."
+          sudo -u "$GUI_USER" /usr/bin/osascript /tmp/dump.scpt > /tmp/dump_stdout.txt 2>/tmp/dump_stderr.txt || true
+          echo "----- dump_stdout (first 200 lines) -----"
+          head -n 200 /tmp/dump_stdout.txt || true
+          echo "----- dump_stderr (first 200 lines) -----"
+          head -n 200 /tmp/dump_stderr.txt || true
+          # show if the expected output file exists
+          if [ -f /tmp/rustdesk_ui.txt ]; then
+            echo "/tmp/rustdesk_ui.txt exists (size):"
+            stat -f "%N %z bytes" /tmp/rustdesk_ui.txt || true
+            echo "---- head of /tmp/rustdesk_ui.txt ----"
+            head -n 200 /tmp/rustdesk_ui.txt || true
+          else
+            echo "/tmp/rustdesk_ui.txt NOT FOUND"
+          fi
+          sudo -u "$GUI_USER" /usr/sbin/screencapture -x "$DEBUG_DIR/03_after_dump.png" || true
 
-      - name: Final capture
+      - name: Final screenshot and verify files
         run: |
-          sudo -u "$GUI_USER" screencapture -x /tmp/rustdesk.png || true
-          sudo -u "$GUI_USER" screencapture -x "$DEBUG_DIR/04_final.png" || true
+          sudo -u "$GUI_USER" /usr/sbin/screencapture -x /tmp/rustdesk.png || true
+          sudo -u "$GUI_USER" /usr/sbin/screencapture -x "$DEBUG_DIR/04_final.png" || true
+          ls -lh /tmp/grant.py /tmp/dump.scpt /tmp/grant_run_stdout.txt /tmp/grant_run_stderr.txt /tmp/dump_stdout.txt /tmp/dump_stderr.txt /tmp/rustdesk_ui.txt || true
 
-      - name: Upload artifacts
+      - name: Upload debugging artifacts (screenshots + logs)
         uses: actions/upload-artifact@v4
         with:
-          name: all-screenshots
+          name: all-screenshots-and-logs
           path: |
             /tmp/debug_screenshots/**
             /tmp/rustdesk.png
             /tmp/rustdesk_ui.txt
+            /tmp/grant_download_head.txt
+            /tmp/grant_run_stdout.txt
+            /tmp/grant_run_stderr.txt
+            /tmp/dump_download_head.txt
+            /tmp/dump_stdout.txt
+            /tmp/dump_stderr.txt
           if-no-files-found: ignore
