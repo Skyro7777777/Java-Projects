@@ -1,77 +1,78 @@
-#Menu driven program to do various list operations
-list1 = [22,4,16,38,13] #list1 has 5 elements
+list1 = [22, 4, 16, 38, 13]
 choice = 0
+
 while True:
-    print("The list has the following elements", list1)
-    print("\n L I S T   O P E R A T I O N S")
-    print(" 1. Append an element")
-    print(" 2. Insert an element at the desired position")
-    print(" 3. Append a list to the given list")
-    print(" 4. Modify an existing element")
-    print(" 5. Delete an existing element by its position")
-    print(" 6. Delete an existing element by its value")
-    print(" 7. Sort the list in ascending order")
-    print(" 8. Sort the list in descending order")
-    print(" 9. Display the list")
-    print(" 10. Exit")
-    choice = int(input("ENTER YOUR CHOICE (1-10): "))
-    #append element
+    print("Current list:", list1)
+    print("\nLIST OPERATIONS")
+    print("1. Append")
+    print("2. Insert")
+    print("3. Add another list")
+    print("4. Modify")
+    print("5. Delete by position")
+    print("6. Delete by value")
+    print("7. Sort ascending")
+    print("8. Sort descending")
+    print("9. Display list")
+    print("10. Exit")
+
+    choice = int(input("Enter your choice (1-10): "))
+
     if choice == 1:
-        element = int(input("Enter the element to be appended: "))
+        element = int(input("Enter element: "))
         list1.append(element)
-        print("The element has been appended\n")
-    #insert an element at desired position
+        print("Element added.\n")
+
     elif choice == 2:
-        element = int(input("Enter the element to be inserted: "))
-        pos = int(input("Enter the position:"))
-        list1.insert(pos,element)
-        print("The element has been inserted\n")
-    #append a list to the given list
+        element = int(input("Enter element: "))
+        pos = int(input("Enter position: "))
+        list1.insert(pos, element)
+        print("Element inserted.\n")
+
     elif choice == 3:
-        newList = eval(input("Enter the list to be appended: "))
+        newList = eval(input("Enter the list: "))
         list1.extend(newList)
-        print("The list has been appended\n")
-    #modify an existing element
+        print("List added.\n")
+
     elif choice == 4:
-        i = int(input("Enter the position of the element to be modified: "))
+        i = int(input("Enter position: "))
         if i < len(list1):
-            newElement = int(input("Enter the new element: "))
+            newElement = int(input("Enter new element: "))
             oldElement = list1[i]
             list1[i] = newElement
-            print("The element",oldElement,"has been modified\n")
+            print(oldElement, "changed to", newElement, "\n")
         else:
-            print("Position of the element is more than the length of list")
-    #delete an existing element by position
+            print("Position is not valid.")
+
     elif choice == 5:
-        i = int(input("Enter the position of the element to be deleted: "))
+        i = int(input("Enter position: "))
         if i < len(list1):
             element = list1.pop(i)
-            print("The element",element,"has been deleted\n")
+            print(element, "deleted.\n")
         else:
-            print("\nPosition of the element is more than the length of list")
-    #delete an existing element by value
+            print("Position is not valid.")
+
     elif choice == 6:
-        element = int(input("\nEnter the element to be deleted: "))
+        element = int(input("Enter element to delete: "))
         if element in list1:
             list1.remove(element)
-            print("\nThe element",element,"has been deleted\n")
+            print(element, "deleted.\n")
         else:
-            print("\nElement",element,"is not present in the list")
-    #list in sorted order
+            print(element, "is not in the list.")
+
     elif choice == 7:
         list1.sort()
-        print("\nThe list has been sorted")
-    #list in reverse sorted order
+        print("List sorted.\n")
+
     elif choice == 8:
-        list1.sort(reverse = True)
-        print("\nThe list has been sorted in reverse order")
-    #display the list
+        list1.sort(reverse=True)
+        print("List sorted in descending order.\n")
+
     elif choice == 9:
-        print("\nThe list is:", list1)
-    #exit from the menu
+        print("List:", list1)
+
     elif choice == 10:
         break
+
     else:
-        print("Choice is not valid")
-        print("\n\nPress any key to continue...........")
-        ch = input()
+        print("Invalid choice.")
+        input("Press Enter to continue...")
